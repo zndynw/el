@@ -6,6 +6,25 @@ use anyhow::Result;
 pub struct Config {
     pub database: DatabaseConfig,
     pub export: ExportConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    #[serde(default)]
+    pub log_file: Option<String>,
+    #[serde(default)]
+    pub verbose: bool,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            log_file: None,
+            verbose: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +52,8 @@ pub struct ExportConfig {
     pub buffer_size: usize,
     #[serde(default)]
     pub compression: CompressionType,
+    #[serde(default = "default_progress_interval")]
+    pub progress_interval: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +83,10 @@ fn default_delimiter() -> String {
 
 fn default_buffer_size() -> usize {
     1024 * 1024  // 1MB
+}
+
+fn default_progress_interval() -> u64 {
+    1_000_000  // 100万行
 }
 
 impl Default for DatabaseConfig {

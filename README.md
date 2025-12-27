@@ -15,6 +15,9 @@
 - ✅ 批量获取优化（fetch_size可配置）
 - ✅ 进度显示（可选）
 - ✅ 导出统计信息（行数、耗时、文件大小、速度）
+- ✅ 结构化日志系统（基于tracing）
+- ✅ 支持文件日志和控制台输出
+- ✅ 环境变量控制日志级别
 - 🚧 MySQL导出（待实现）
 - 🚧 PostgreSQL导出（待实现）
 - 🚧 数据导入功能（待实现）
@@ -77,6 +80,11 @@ cp config.example.toml config.toml
 3. 运行导出命令：
 ```bash
 el export --config config.toml
+
+# 启用详细日志（全局参数-v可以放在子命令前或后）
+el -v export --config config.toml
+# 或
+el export --config config.toml -v
 ```
 
 ### 方式二：使用命令行参数
@@ -91,9 +99,25 @@ el export \
   --format csv \
   --progress \
   --fetch 1000
+
+# 启用详细日志
+el -v export \
+  --conn localhost:1521/ORCL \
+  --username your_username \
+  --password your_password \
+  --query "SELECT * FROM your_table WHERE rownum <= 10000" \
+  --output output.csv
 ```
 
 ## 命令行参数说明
+
+### 全局参数
+
+| 参数 | 说明 | 必需 | 默认值 |
+|------|------|------|--------|
+| `-v, --verbose` | 详细日志（debug级别） | 否 | false |
+
+### export 子命令参数
 
 | 参数 | 说明 | 必需 | 默认值 |
 |------|------|------|--------|
@@ -107,12 +131,59 @@ el export \
 | `--format` | 导出格式（csv/tsv/custom） | 否 | csv |
 | `--delimiter` | 自定义分隔符 | 否 | \x03 (ASCII 3) |
 | `--progress` | 显示进度 | 否 | false |
+| `--progress-interval` | 进度输出间隔（行数） | 否 | 1000000 |
 | `--fetch` | 批量获取大小 | 否 | 1000 |
 | `--header` | 包含表头 | 否 | false |
 | `--buffer-size` | 缓冲区大小（字节） | 否 | 1048576 (1MB) |
 | `--compression` | 压缩类型（none/gzip） | 否 | none |
+| `--log-file` | 日志文件路径（追加模式） | 否 | - (控制台) |
 
-*注：使用配置文件时，这些参数不是必需的。
+*注：使用配置文件时，这些参数不是必需的。**命令行参数优先级高于配置文件**。
+
+## 参数优先级
+
+当同时使用配置文件和命令行参数时，**命令行参数的优先级高于配置文件**。这意味着：
+
+1. **所有命令行参数都可以覆盖配置文件中的对应设置**
+2. **未在命令行指定的参数将使用配置文件中的值**
+3. **如果配置文件和命令行都未指定，则使用默认值**
+
+### 使用示例
+
+假设配置文件 `config.toml` 中设置：
+```toml
+[database]
+fetch_size = 1000
+
+[export]
+output_file = "output.csv"
+format = "csv"
+show_progress = false
+```
+
+使用命令行参数覆盖部分配置：
+```bash
+# 覆盖fetch_size和output_file，其他参数使用配置文件中的值
+el export --config config.toml --fetch 5000 --output custom_output.csv
+
+# 覆盖format和progress，其他参数使用配置文件中的值
+el export --config config.toml --format tsv --progress
+
+# 覆盖数据库连接信息
+el export --config config.toml --conn newhost:1521/NEWDB --username newuser --password newpass
+
+# 覆盖查询SQL
+el export --config config.toml --query "SELECT * FROM another_table"
+```
+
+### 优先级规则总结
+
+| 优先级 | 来源 | 说明 |
+|--------|------|------|
+| 最高 | 环境变量（RUST_LOG） | 仅影响日志级别 |
+| 高 | 命令行参数 | 覆盖配置文件中的所有对应设置 |
+| 低 | 配置文件 | 提供默认配置 |
+| 最低 | 程序默认值 | 当配置文件和命令行都未指定时使用 |
 
 ## 配置文件示例
 
@@ -131,6 +202,79 @@ format = "csv"
 delimiter = "\x03"
 show_progress = true
 include_header = false
+
+[logging]
+# log_file = "export.log"  # 可选，默认输出到控制台
+verbose = false
+```
+
+## 日志系统
+
+本工具使用 [tracing](https://github.com/tokio-rs/tracing) 作为日志框架，支持灵活的日志配置。
+
+### 日志级别
+
+支持以下日志级别（从低到高）：
+- `trace` - 最详细的跟踪信息
+- `debug` - 调试信息
+- `info` - 一般信息（默认）
+- `warn` - 警告信息
+- `error` - 错误信息
+
+### 配置方式
+
+#### 1. 通过配置文件或命令行参数
+
+```bash
+# 输出到控制台（默认info级别）
+el export --config config.toml
+
+# 输出到文件（追加模式）
+el export --config config.toml --log-file export.log
+
+# 启用详细日志（debug级别，使用全局-v参数）
+el -v export --config config.toml
+
+# 同时输出到文件和启用详细日志
+el -v export --config config.toml --log-file export.log
+```
+
+#### 2. 通过环境变量（RUST_LOG）
+
+环境变量优先级最高，可以覆盖配置文件和命令行参数：
+
+```bash
+# Linux/macOS
+export RUST_LOG=debug
+el export --config config.toml
+
+# Windows PowerShell
+$env:RUST_LOG="debug"
+.\el.exe export --config config.toml
+
+# Windows CMD
+set RUST_LOG=debug
+el.exe export --config config.toml
+
+# 只显示特定模块的日志
+RUST_LOG=el::export=debug el export --config config.toml
+
+# 组合多个模块
+RUST_LOG=el::export=debug,el::db=trace el export --config config.toml
+```
+
+### 日志输出示例
+
+```
+2024-12-27T11:20:30.123456Z  INFO el: Loading configuration from: config.toml
+2024-12-27T11:20:30.234567Z  INFO el: Connecting to oracle database...
+2024-12-27T11:20:31.345678Z  INFO el: Connected successfully!
+2024-12-27T11:20:31.456789Z  INFO el: Starting export...
+2024-12-27T11:23:32.567890Z  INFO el: 
+=== Export Summary ===
+2024-12-27T11:23:32.678901Z  INFO el: Output file: output.csv
+2024-12-27T11:23:32.789012Z  INFO el: Rows exported: 6688425
+2024-12-27T11:23:32.890123Z  INFO el: Duration: 181.89 seconds
 ```
 
 ## 性能优化
