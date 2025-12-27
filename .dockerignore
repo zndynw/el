@@ -1,0 +1,30 @@
+# Rust编译产物
+target/
+Cargo.lock
+
+# IDE配置
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# 文档和示例
+*.md
+!README.md
+
+# 测试和临时文件
+*.csv
+*.tsv
+*.sql
+config.toml
+
+# Docker相关
+Dockerfile
+.dockerignore
+build-centos7.sh
+build-centos7.ps1

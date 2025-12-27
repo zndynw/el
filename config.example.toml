@@ -1,0 +1,59 @@
+# 数据导出工具配置文件示例
+# Example configuration file for data export tool
+
+[database]
+# 数据库类型: oracle, mysql, postgresql
+# Database type: oracle, mysql, postgresql
+db_type = "oracle"
+
+# 数据库连接字符串 (格式: host:port/service_name)
+# Database connection string (format: host:port/service_name)
+connection_string = "localhost:1521/ORCL"
+
+# 用户名
+# Username
+username = "your_username"
+
+# 密码
+# Password
+password = "your_password"
+
+# 批量获取大小 (优化性能，默认1000)
+# Fetch size for batch processing (default: 1000)
+fetch_size = 1000
+
+[export]
+# 查询SQL语句或SQL文件路径
+# Query SQL statement or SQL file path
+# 示例 (Examples):
+#   直接SQL: query = "SELECT * FROM your_table WHERE rownum <= 10000"
+#   SQL文件: query = "query.sql"
+query = "SELECT * FROM your_table WHERE rownum <= 10000"
+
+# 输出文件路径
+# Output file path
+output_file = "output.csv"
+
+# 导出格式: csv, tsv, custom
+# Export format: csv, tsv, custom
+format = "csv"
+
+# 分隔符 (默认为ASCII值3的字符，即\u0003)
+# Delimiter (default is ASCII 3 character, i.e., \u0003)
+delimiter = "\u0003"
+
+# 是否显示进度
+# Show progress
+show_progress = true
+
+# 是否包含表头 (默认不包含)
+# Include header (default is false)
+include_header = false
+
+# 缓冲区大小（字节，默认1MB）
+# Buffer size in bytes (default: 1MB)
+buffer_size = 1048576
+
+# 压缩类型: none, gzip (默认不压缩)
+# Compression type: none, gzip (default: none)
+compression = "none"
