@@ -2,16 +2,27 @@ mod config;
 mod db;
 mod export;
 
+use anyhow::Result;
+use chrono::Local;
 use clap::{Parser, Subcommand};
 use config::{CompressionType, Config, DatabaseConfig, ExportConfig, ExportFormat, LoggingConfig};
 use db::oracle::OracleDatabase;
 use db::Database;
 use export::Exporter;
-use anyhow::Result;
+use std::fmt as stdfmt;
 use std::fs;
 use std::path::Path;
 use tracing::info;
-use tracing_subscriber::{fmt, EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::fmt::{format::Writer, layer as fmt_layer, time::FormatTime};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+struct LocalTimer;
+
+impl FormatTime for LocalTimer {
+    fn format_time(&self, w: &mut Writer<'_>) -> stdfmt::Result {
+        write!(w, "{}", Local::now().format("%Y-%m-%d %H:%M:%S%.3f %:z"))
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "el")]
@@ -20,7 +31,7 @@ struct Cli {
     /// 详细日志 (Verbose logging)
     #[arg(short, long, global = true)]
     verbose: bool,
-    
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -98,40 +109,49 @@ enum Commands {
 /// 初始化tracing日志系统
 fn init_tracing(log_file: Option<&String>, verbose: bool) -> Result<()> {
     let level = if verbose { "debug" } else { "info" };
-    
+
     // 优先使用环境变量，如果没有设置则使用verbose参数
     let env_filter = if std::env::var("RUST_LOG").is_ok() {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level))
     } else {
         EnvFilter::new(level)
     };
-    
+
     if let Some(log_path) = log_file {
         // 输出到文件（追加模式）
         let file_appender = tracing_appender::rolling::never(
-            std::path::Path::new(log_path).parent().unwrap_or(std::path::Path::new(".")),
-            std::path::Path::new(log_path).file_name().unwrap_or(std::ffi::OsStr::new("export.log"))
+            std::path::Path::new(log_path)
+                .parent()
+                .unwrap_or(std::path::Path::new(".")),
+            std::path::Path::new(log_path)
+                .file_name()
+                .unwrap_or(std::ffi::OsStr::new("export.log")),
         );
-        
+
         tracing_subscriber::registry()
             .with(env_filter)
-            .with(fmt::layer().with_writer(file_appender).with_ansi(false))
+            .with(
+                fmt_layer()
+                    .with_writer(file_appender)
+                    .with_ansi(false)
+                    .with_timer(LocalTimer),
+            )
             .init();
     } else {
         // 输出到控制台
         tracing_subscriber::registry()
             .with(env_filter)
-            .with(fmt::layer())
+            .with(fmt_layer().with_timer(LocalTimer))
             .init();
     }
-    
+
     Ok(())
 }
 
 /// 读取SQL查询，支持直接传入SQL字符串或SQL文件路径
 fn read_query_or_file(input: &str) -> Result<String> {
     let path = Path::new(input);
-    
+
     // 检查是否为文件路径
     if path.exists() && path.is_file() {
         // 读取文件内容
@@ -171,11 +191,11 @@ fn main() -> Result<()> {
                 let mut exp_cfg = cfg.export;
                 // 处理配置文件中的query字段，支持SQL文件路径
                 exp_cfg.query = read_query_or_file(&exp_cfg.query)?;
-                
+
                 // 命令行参数优先级高于配置文件
                 let mut db_cfg = cfg.database;
                 let mut log_cfg = cfg.logging;
-                
+
                 // 覆盖数据库配置
                 if let Some(ref dt) = db_type {
                     db_cfg.db_type = dt.clone();
@@ -189,10 +209,11 @@ fn main() -> Result<()> {
                 if let Some(ref p) = password {
                     db_cfg.password = p.clone();
                 }
-                if fetch != 1000 {  // 如果不是默认值，则覆盖
+                if fetch != 1000 {
+                    // 如果不是默认值，则覆盖
                     db_cfg.fetch_size = fetch;
                 }
-                
+
                 // 覆盖导出配置
                 if let Some(ref q) = query {
                     exp_cfg.query = read_query_or_file(q)?;
@@ -200,7 +221,8 @@ fn main() -> Result<()> {
                 if let Some(ref o) = output {
                     exp_cfg.output_file = o.clone();
                 }
-                if format != "csv" {  // 如果不是默认值，则覆盖
+                if format != "csv" {
+                    // 如果不是默认值，则覆盖
                     exp_cfg.format = match format.to_lowercase().as_str() {
                         "csv" => ExportFormat::Csv,
                         "tsv" => ExportFormat::Tsv,
@@ -211,25 +233,30 @@ fn main() -> Result<()> {
                 if let Some(ref d) = delimiter {
                     exp_cfg.delimiter = d.clone();
                 }
-                if progress {  // 如果命令行指定了progress，则覆盖
+                if progress {
+                    // 如果命令行指定了progress，则覆盖
                     exp_cfg.show_progress = true;
                 }
-                if header {  // 如果命令行指定了header，则覆盖
+                if header {
+                    // 如果命令行指定了header，则覆盖
                     exp_cfg.include_header = true;
                 }
-                if buffer_size != 1048576 {  // 如果不是默认值，则覆盖
+                if buffer_size != 1048576 {
+                    // 如果不是默认值，则覆盖
                     exp_cfg.buffer_size = buffer_size;
                 }
-                if compression != "none" {  // 如果不是默认值，则覆盖
+                if compression != "none" {
+                    // 如果不是默认值，则覆盖
                     exp_cfg.compression = match compression.to_lowercase().as_str() {
                         "gzip" => CompressionType::Gzip,
                         _ => exp_cfg.compression,
                     };
                 }
-                if progress_interval != 1000000 {  // 如果不是默认值，则覆盖
+                if progress_interval != 1000000 {
+                    // 如果不是默认值，则覆盖
                     exp_cfg.progress_interval = progress_interval;
                 }
-                
+
                 // 覆盖日志配置
                 if log_file.is_some() {
                     log_cfg.log_file = log_file;
@@ -237,13 +264,14 @@ fn main() -> Result<()> {
                 if cli.verbose {
                     log_cfg.verbose = true;
                 }
-                
+
                 (db_cfg, exp_cfg, log_cfg)
             } else {
                 // 从命令行参数构建配置
                 let db_config = DatabaseConfig {
                     db_type: db_type.unwrap_or_else(|| "oracle".to_string()),
-                    connection_string: conn.ok_or_else(|| anyhow::anyhow!("Connection string is required"))?,
+                    connection_string: conn
+                        .ok_or_else(|| anyhow::anyhow!("Connection string is required"))?,
                     username: username.ok_or_else(|| anyhow::anyhow!("Username is required"))?,
                     password: password.ok_or_else(|| anyhow::anyhow!("Password is required"))?,
                     fetch_size: fetch,
@@ -258,15 +286,16 @@ fn main() -> Result<()> {
 
                 let query_input = query.ok_or_else(|| anyhow::anyhow!("Query is required"))?;
                 let query_sql = read_query_or_file(&query_input)?;
-                
+
                 let compression_type = match compression.to_lowercase().as_str() {
                     "gzip" => CompressionType::Gzip,
                     _ => CompressionType::None,
                 };
-                
+
                 let export_config = ExportConfig {
                     query: query_sql,
-                    output_file: output.ok_or_else(|| anyhow::anyhow!("Output file is required"))?,
+                    output_file: output
+                        .ok_or_else(|| anyhow::anyhow!("Output file is required"))?,
                     format: export_format,
                     delimiter: delimiter.unwrap_or_else(|| "\x03".to_string()),
                     show_progress: progress,
@@ -286,7 +315,7 @@ fn main() -> Result<()> {
 
             // 初始化tracing
             init_tracing(logging_config.log_file.as_ref(), logging_config.verbose)?;
-            
+
             if let Some(ref config_path) = config {
                 info!("Loading configuration from: {}", config_path);
             }
@@ -304,7 +333,7 @@ fn main() -> Result<()> {
             tracing::debug!("  Include header: {}", export_config.include_header);
             tracing::debug!("  Buffer size: {} bytes", export_config.buffer_size);
             tracing::debug!("  Compression: {:?}", export_config.compression);
-            
+
             // 输出SQL脚本内容（verbose模式）
             tracing::debug!("Query SQL:");
             tracing::debug!("{}", export_config.query);

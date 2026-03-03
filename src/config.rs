@@ -1,6 +1,6 @@
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use anyhow::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -82,11 +82,11 @@ fn default_delimiter() -> String {
 }
 
 fn default_buffer_size() -> usize {
-    1024 * 1024  // 1MB
+    1024 * 1024 // 1MB
 }
 
 fn default_progress_interval() -> u64 {
-    1_000_000  // 100万行
+    1_000_000 // 100万行
 }
 
 impl Default for DatabaseConfig {

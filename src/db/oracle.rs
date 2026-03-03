@@ -24,27 +24,22 @@ impl OracleDatabase {
 
     fn row_to_strings(&self, row: &Row, col_count: usize) -> Result<Vec<String>> {
         let mut values = Vec::with_capacity(col_count);
-        
+
         for i in 0..col_count {
             let value: Option<String> = row.get(i)?;
             values.push(value.unwrap_or_default());
         }
-        
+
         Ok(values)
     }
 
     pub fn get_column_info(&mut self, query: &str) -> Result<Vec<String>> {
-        let conn = self
-            .connection
-            .as_ref()
-            .context("Database not connected")?;
+        let conn = self.connection.as_ref().context("Database not connected")?;
 
-        let mut stmt = conn.statement(query)
-            .fetch_array_size(1)
-            .build()?;
+        let mut stmt = conn.statement(query).fetch_array_size(1).build()?;
 
         let rows = stmt.query(&[])?;
-        
+
         let columns: Vec<String> = rows
             .column_info()
             .iter()
@@ -54,21 +49,23 @@ impl OracleDatabase {
         Ok(columns)
     }
 
-    pub fn execute_query_streaming<F>(&mut self, query: &str, mut callback: F) -> Result<Vec<String>>
+    pub fn execute_query_streaming<F>(
+        &mut self,
+        query: &str,
+        mut callback: F,
+    ) -> Result<Vec<String>>
     where
         F: FnMut(Vec<String>) -> Result<()>,
     {
-        let conn = self
-            .connection
-            .as_ref()
-            .context("Database not connected")?;
+        let conn = self.connection.as_ref().context("Database not connected")?;
 
-        let mut stmt = conn.statement(query)
+        let mut stmt = conn
+            .statement(query)
             .fetch_array_size(self.config.fetch_size as u32)
             .build()?;
 
         let rows = stmt.query(&[])?;
-        
+
         let columns: Vec<String> = rows
             .column_info()
             .iter()
@@ -90,37 +87,30 @@ impl OracleDatabase {
 impl Database for OracleDatabase {
     fn connect(&mut self) -> Result<()> {
         let conn_str = self.build_connection_string();
-        let conn = Connection::connect(
-            &self.config.username,
-            &self.config.password,
-            &conn_str,
-        )
-        .context("Failed to connect to Oracle database")?;
+        let conn = Connection::connect(&self.config.username, &self.config.password, &conn_str)
+            .context("Failed to connect to Oracle database")?;
 
         self.connection = Some(conn);
         Ok(())
     }
 
     fn execute_query(&mut self, query: &str) -> Result<QueryResult> {
-        let conn = self
-            .connection
-            .as_ref()
-            .context("Database not connected")?;
+        let conn = self.connection.as_ref().context("Database not connected")?;
 
         let mut stmt = conn.statement(query).build()?;
         let rows = stmt.query(&[])?;
-        
+
         let columns: Vec<String> = rows
             .column_info()
             .iter()
             .map(|col| col.name().to_string())
             .collect();
-        
+
         let col_count = columns.len();
-        
+
         let mut result = QueryResult::new();
         result.columns = columns;
-        
+
         for row_result in rows {
             let row = row_result?;
             let values = self.row_to_strings(&row, col_count)?;
