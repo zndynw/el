@@ -39,6 +39,16 @@ cargo build --release
 
 编译后的可执行文件位于 `target/release/el.exe`（Windows）或 `target/release/el`（Linux/macOS）。
 
+#### 使用 zigbuild 编译 Linux glibc 2.17 兼容版本
+
+如果需要在较老的 Linux 发行版（如 CentOS 7）上运行，建议使用以下命令：
+
+```bash
+cargo zigbuild --release --target x86_64-unknown-linux-gnu.2.17
+```
+
+该目标可避免 `musl` 目标下 Oracle Client 动态加载受限的问题。
+
 #### 使用Docker编译CentOS 7版本
 
 如果需要编译适用于CentOS 7的二进制程序，可以使用Docker进行交叉编译：
