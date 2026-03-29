@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -33,7 +34,7 @@ pub struct DatabaseConfig {
     pub connection_string: String,
     pub username: String,
     pub password: String,
-    #[serde(default)]
+    #[serde(default = "default_fetch_size")]
     pub fetch_size: usize,
 }
 
@@ -54,9 +55,11 @@ pub struct ExportConfig {
     pub compression: CompressionType,
     #[serde(default = "default_progress_interval")]
     pub progress_interval: u64,
+    #[serde(default)]
+    pub skip_errors: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ExportFormat {
     Csv,
@@ -64,11 +67,36 @@ pub enum ExportFormat {
     Custom,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl FromStr for ExportFormat {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.to_lowercase().as_str() {
+            "csv" => Ok(Self::Csv),
+            "tsv" => Ok(Self::Tsv),
+            "custom" => Ok(Self::Custom),
+            _ => Err(format!("unsupported export format: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CompressionType {
     None,
     Gzip,
+}
+
+impl FromStr for CompressionType {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.to_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "gzip" => Ok(Self::Gzip),
+            _ => Err(format!("unsupported compression type: {value}")),
+        }
+    }
 }
 
 impl Default for CompressionType {
@@ -82,11 +110,15 @@ fn default_delimiter() -> String {
 }
 
 fn default_buffer_size() -> usize {
-    1024 * 1024 // 1MB
+    1024 * 1024
+}
+
+fn default_fetch_size() -> usize {
+    1000
 }
 
 fn default_progress_interval() -> u64 {
-    1_000_000 // 100万行
+    1_000_000
 }
 
 impl Default for DatabaseConfig {
@@ -96,7 +128,7 @@ impl Default for DatabaseConfig {
             connection_string: "localhost:1521/ORCL".to_string(),
             username: String::new(),
             password: String::new(),
-            fetch_size: 1000,
+            fetch_size: default_fetch_size(),
         }
     }
 }

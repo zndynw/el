@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./target/debug/el.exe --help)",
+      "Bash(./target/release/el.exe --help)",
+      "Bash(cargo run:*)",
+      "Bash(cargo build:*)",
+      "Bash(./target/release/el.exe export:*)"
+    ]
+  }
+}

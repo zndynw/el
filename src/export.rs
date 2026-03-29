@@ -1,13 +1,12 @@
 use crate::config::{CompressionType, ExportConfig, ExportFormat};
-use crate::db::oracle::OracleDatabase;
+use crate::db::{Database, QuerySink};
+use crate::value::{DbValue, ValueFormatter};
 use anyhow::{Context, Result};
 use csv::WriterBuilder;
-use flate2::write::GzEncoder;
 use flate2::Compression;
+use flate2::write::GzEncoder;
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::time::Instant;
 use tracing::info;
 
@@ -20,68 +19,32 @@ impl Exporter {
         Self { config }
     }
 
-    pub fn export(&mut self, db: &mut OracleDatabase) -> Result<ExportStats> {
+    pub fn export(&mut self, db: &mut dyn Database) -> Result<ExportStats> {
         let start_time = Instant::now();
-        let row_count = Arc::new(AtomicU64::new(0));
-        let mut io_write_time = 0.0;
-
-        let file =
-            File::create(&self.config.output_file).context("Failed to create output file")?;
-
-        let writer: Box<dyn Write> = match self.config.compression {
-            CompressionType::Gzip => Box::new(BufWriter::with_capacity(
-                self.config.buffer_size,
-                GzEncoder::new(file, Compression::default()),
-            )),
-            CompressionType::None => {
-                Box::new(BufWriter::with_capacity(self.config.buffer_size, file))
-            }
-        };
-        let mut writer = writer;
-
-        let delimiter = self.get_delimiter();
-
-        // 先获取列信息
-        let columns = db.get_column_info(&self.config.query)?;
-
-        // 如果需要表头，先写入
-        if self.config.include_header {
-            self.write_row(&mut *writer, &columns, delimiter)?;
-        }
-
-        // 流式写入数据
-        let row_count_clone = Arc::clone(&row_count);
-        let show_progress = self.config.show_progress;
-        let progress_interval = self.config.progress_interval;
 
         let db_start = Instant::now();
-        db.execute_query_streaming(&self.config.query, |row_values| {
-            let count = row_count_clone.fetch_add(1, Ordering::Relaxed) + 1;
-
-            // 使用日志输出进度信息
-            if show_progress && count % progress_interval == 0 {
-                let elapsed = db_start.elapsed().as_secs_f64();
-                let speed = count as f64 / elapsed;
-                info!("Progress: {} rows exported ({:.2} rows/sec)", count, speed);
-            }
-
-            let io_start = Instant::now();
-            self.write_row(&mut *writer, &row_values, delimiter)?;
-            io_write_time += io_start.elapsed().as_secs_f64();
-            Ok(())
-        })?;
+        let (rows, skipped, io_write_time) = {
+            let mut sink = ExportSink::new(&self.config)?;
+            db.stream_query(&self.config.query, &mut sink)?;
+            sink.finish()?;
+            (
+                sink.rows_exported,
+                sink.rows_skipped,
+                sink.io_write_time_secs,
+            )
+        };
         let db_read_time = db_start.elapsed().as_secs_f64();
 
-        writer.flush()?;
-
-        let rows = row_count.load(Ordering::Relaxed);
-        if show_progress {
-            info!("Export completed: {} rows", rows);
+        if self.config.show_progress {
+            if skipped > 0 {
+                info!("Export completed: {} rows ({} skipped)", rows, skipped);
+            } else {
+                info!("Export completed: {} rows", rows);
+            }
         }
 
         let duration = start_time.elapsed();
         let file_size = std::fs::metadata(&self.config.output_file)?.len();
-        let rows = row_count.load(Ordering::Relaxed);
         let avg_row_size = if rows > 0 {
             file_size as f64 / rows as f64
         } else {
@@ -90,6 +53,7 @@ impl Exporter {
 
         Ok(ExportStats {
             rows_exported: rows,
+            rows_skipped: skipped,
             duration_secs: duration.as_secs_f64(),
             file_size_bytes: file_size,
             db_read_time_secs: db_read_time,
@@ -99,42 +63,181 @@ impl Exporter {
         })
     }
 
-    fn get_delimiter(&self) -> u8 {
-        match self.config.format {
+    fn get_delimiter(config: &ExportConfig) -> u8 {
+        match config.format {
             ExportFormat::Csv => {
-                if self.config.delimiter.len() == 1 {
-                    self.config.delimiter.as_bytes()[0]
+                if config.delimiter.len() == 1 {
+                    config.delimiter.as_bytes()[0]
                 } else {
                     b','
                 }
             }
             ExportFormat::Tsv => b'\t',
             ExportFormat::Custom => {
-                if self.config.delimiter.len() == 1 {
-                    self.config.delimiter.as_bytes()[0]
+                if config.delimiter.len() == 1 {
+                    config.delimiter.as_bytes()[0]
                 } else {
                     b','
                 }
             }
         }
     }
+}
 
-    fn write_row(&self, writer: &mut dyn Write, values: &[String], delimiter: u8) -> Result<()> {
-        let buffer = Vec::with_capacity(1024);
-        let mut csv_writer = WriterBuilder::new()
-            .delimiter(delimiter)
-            .from_writer(buffer);
+struct ExportSink {
+    config: ExportConfig,
+    formatter: ValueFormatter,
+    writer: RecordWriter,
+    rows_exported: u64,
+    rows_skipped: u64,
+    io_write_time_secs: f64,
+    query_started_at: Instant,
+}
 
-        csv_writer.write_record(values)?;
-        let data = csv_writer.into_inner()?;
-        writer.write_all(&data)?;
+enum RecordWriter {
+    Csv(csv::Writer<Box<dyn Write>>),
+    Custom {
+        writer: Box<dyn Write>,
+        delimiter: String,
+    },
+}
 
+impl ExportSink {
+    fn new(config: &ExportConfig) -> Result<Self> {
+        let file = File::create(&config.output_file).context("Failed to create output file")?;
+
+        let writer: Box<dyn Write> = match config.compression {
+            CompressionType::Gzip => Box::new(BufWriter::with_capacity(
+                config.buffer_size,
+                GzEncoder::new(file, Compression::default()),
+            )),
+            CompressionType::None => Box::new(BufWriter::with_capacity(config.buffer_size, file)),
+        };
+
+        let writer = match config.format {
+            ExportFormat::Custom => RecordWriter::Custom {
+                writer,
+                delimiter: config.delimiter.clone(),
+            },
+            ExportFormat::Csv | ExportFormat::Tsv => RecordWriter::Csv(
+                WriterBuilder::new()
+                    .delimiter(Exporter::get_delimiter(config))
+                    .from_writer(writer),
+            ),
+        };
+
+        Ok(Self {
+            config: config.clone(),
+            formatter: ValueFormatter::default(),
+            writer,
+            rows_exported: 0,
+            rows_skipped: 0,
+            io_write_time_secs: 0.0,
+            query_started_at: Instant::now(),
+        })
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        self.writer.flush()?;
         Ok(())
     }
 }
 
+impl QuerySink for ExportSink {
+    fn on_columns(&mut self, columns: &[String]) -> Result<()> {
+        if self.config.include_header {
+            self.writer.write_strings(columns)?;
+        }
+
+        Ok(())
+    }
+
+    fn on_row(&mut self, values: &[DbValue]) -> Result<()> {
+        let formatted_values: Vec<String> = values
+            .iter()
+            .map(|value| self.formatter.format(value))
+            .collect();
+        let io_start = Instant::now();
+        let write_result = self.writer.write_strings(&formatted_values);
+        self.io_write_time_secs += io_start.elapsed().as_secs_f64();
+
+        match write_result {
+            Ok(_) => {
+                self.rows_exported += 1;
+
+                if self.config.show_progress
+                    && self.rows_exported % self.config.progress_interval == 0
+                {
+                    let elapsed = self.query_started_at.elapsed().as_secs_f64();
+                    let speed = self.rows_exported as f64 / elapsed;
+                    info!(
+                        "Progress: {} rows exported ({:.2} rows/sec)",
+                        self.rows_exported, speed
+                    );
+                }
+                Ok(())
+            }
+            Err(e) => {
+                if self.config.skip_errors {
+                    self.rows_skipped += 1;
+                    tracing::warn!("Skipped row due to error: {}", e);
+                    Ok(())
+                } else {
+                    Err(e.into())
+                }
+            }
+        }
+    }
+}
+
+impl RecordWriter {
+    fn write_strings<S>(&mut self, values: &[S]) -> Result<()>
+    where
+        S: AsRef<str>,
+    {
+        match self {
+            Self::Csv(writer) => {
+                writer.write_record(values.iter().map(AsRef::as_ref))?;
+                Ok(())
+            }
+            Self::Custom { writer, delimiter } => {
+                write_custom_record(writer.as_mut(), delimiter, values)?;
+                Ok(())
+            }
+        }
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        match self {
+            Self::Csv(writer) => {
+                writer.flush()?;
+                Ok(())
+            }
+            Self::Custom { writer, .. } => {
+                writer.flush()?;
+                Ok(())
+            }
+        }
+    }
+}
+
+fn write_custom_record<S>(writer: &mut dyn Write, delimiter: &str, values: &[S]) -> Result<()>
+where
+    S: AsRef<str>,
+{
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            writer.write_all(delimiter.as_bytes())?;
+        }
+        writer.write_all(value.as_ref().as_bytes())?;
+    }
+    writer.write_all(b"\n")?;
+    Ok(())
+}
+
 pub struct ExportStats {
     pub rows_exported: u64,
+    pub rows_skipped: u64,
     pub duration_secs: f64,
     pub file_size_bytes: u64,
     pub db_read_time_secs: f64,
@@ -148,6 +251,9 @@ impl ExportStats {
         info!("Export Summary:");
         info!("  Output file: {}", self.output_file);
         info!("  Rows exported: {}", self.rows_exported);
+        if self.rows_skipped > 0 {
+            info!("  Rows skipped: {}", self.rows_skipped);
+        }
         info!("  Duration: {:.2} seconds", self.duration_secs);
         info!(
             "  File size: {} bytes ({:.2} MB)",
@@ -177,5 +283,30 @@ impl ExportStats {
             let mb_per_sec = (self.file_size_bytes as f64 / 1024.0 / 1024.0) / self.duration_secs;
             info!("  Throughput: {:.2} MB/second", mb_per_sec);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_custom_record;
+
+    #[test]
+    fn custom_writer_keeps_quotes_unchanged() {
+        let mut output = Vec::new();
+
+        write_custom_record(&mut output, "\x03", &["1", "2", "xx\"yy\"zz", "4"])
+            .expect("custom record should be written");
+
+        assert_eq!(String::from_utf8(output).unwrap(), "1\x032\x03xx\"yy\"zz\x034\n");
+    }
+
+    #[test]
+    fn custom_writer_does_not_add_csv_quoting_for_headers() {
+        let mut output = Vec::new();
+
+        write_custom_record(&mut output, "\x03", &["col1", "col2", "col3", "col4"])
+            .expect("header should be written");
+
+        assert_eq!(String::from_utf8(output).unwrap(), "col1\x03col2\x03col3\x03col4\n");
     }
 }

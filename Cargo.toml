@@ -6,8 +6,9 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.5.60", features = ["derive"] }
 oracle = "0.6.3"
+mysql = "27.0.0"
 serde = { version = "1.0.228", features = ["derive"] }
-toml = "1.0.3+spec-1.1.0"
+toml = "1.0.3"
 csv = "1.4"
 anyhow = "1.0.102"
 flate2 = "1.1.9"
@@ -15,3 +16,6 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
 chrono = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = ["Win32_System_Console"] }
