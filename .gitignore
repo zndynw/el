@@ -2,3 +2,4 @@
 Cargo.lock
 .output.txt
 .idea/
+.claude/
