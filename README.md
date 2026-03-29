@@ -301,7 +301,7 @@ created = "created_at"
 ```toml
 [database]
 db_type = "greenplum"
-connection_string = "10.1.2.30:5432/huatai"
+connection_string = "127.0.0.1:5432/huatai"
 username = "htods"
 # password = "secret"
 gpfdist_host = "etl"
