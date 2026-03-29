@@ -1,0 +1,33 @@
+# 自定义分隔符配置示例（管道符 |）
+
+[database]
+db_type = "mysql"
+connection_string = "localhost:3306/mydb"
+username = "root"
+password = "password"
+
+[export]
+query = "SELECT * FROM logs"
+output_file = "logs.txt"
+format = "custom"
+delimiter = "|"  # 管道符分隔
+include_header = true
+show_progress = true
+
+[import]
+table = "logs"
+input_file = "logs.txt"
+format = "custom"
+delimiter = "|"  # 管道符分隔
+has_header = true
+batch_size = 2000
+on_error = "skip"
+transaction_mode = "per_batch"
+show_progress = true
+
+[import.column_types]
+log_id = "integer"
+log_time = "timestamp"
+
+[logging]
+verbose = false

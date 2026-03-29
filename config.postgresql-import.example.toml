@@ -1,0 +1,48 @@
+# PostgreSQL 导入配置示例
+
+[database]
+db_type = "postgresql"
+connection_string = "localhost:5432/mydb"
+username = "postgres"
+password = "password"
+
+[import]
+table = "users"
+input_file = "users.csv"
+format = "csv"
+delimiter = ","
+has_header = true
+batch_size = 1000
+null_value = ""
+on_error = "skip"  # skip, abort
+transaction_mode = "per_batch"  # per_batch, all, none
+show_progress = true
+progress_interval = 100000
+truncate_table = false
+compression = "none"  # none, gzip
+
+# 可选：指定目标列（默认使用映射后的全部输入列）
+# target_columns = ["id", "name", "email", "created_at"]
+
+# 可选：列映射（CSV列名 -> 表列名）
+# [import.column_mapping]
+# user_id = "id"
+# user_name = "name"
+
+# 可选：跳过某些列
+# skip_columns = ["temp_column"]
+
+# 可选：指定列类型
+# [import.column_types]
+# id = "integer"
+# age = "integer"
+# created_at = "timestamp"
+# amount = "decimal"
+
+# 可选：导入前后执行 SQL
+# pre_sql = "TRUNCATE TABLE users"
+# post_sql = "ANALYZE users"
+
+[logging]
+log_file = "import.log"
+verbose = false

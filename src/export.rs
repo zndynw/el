@@ -22,6 +22,37 @@ impl Exporter {
     pub fn export(&mut self, db: &mut dyn Database) -> Result<ExportStats> {
         let start_time = Instant::now();
 
+        // Try direct export first (PostgreSQL optimization)
+        if let Ok((bytes_written, row_count)) = self.try_direct_export(db) {
+            let duration = start_time.elapsed();
+            let file_size = std::fs::metadata(&self.config.output_file)?.len();
+            let avg_row_size = if row_count > 0 {
+                file_size as f64 / row_count as f64
+            } else {
+                0.0
+            };
+
+            if self.config.show_progress {
+                if row_count > 0 {
+                    info!("Export completed: {} rows", row_count);
+                } else {
+                    info!("Export completed: {} bytes written", bytes_written);
+                }
+            }
+
+            return Ok(ExportStats {
+                rows_exported: row_count,
+                rows_skipped: 0,
+                duration_secs: duration.as_secs_f64(),
+                file_size_bytes: file_size,
+                db_read_time_secs: duration.as_secs_f64(),
+                io_write_time_secs: 0.0,
+                avg_row_size_bytes: avg_row_size,
+                output_file: self.config.output_file.clone(),
+            });
+        }
+
+        // Fallback to traditional stream_query
         let db_start = Instant::now();
         let (rows, skipped, io_write_time) = {
             let mut sink = ExportSink::new(&self.config)?;
@@ -61,6 +92,19 @@ impl Exporter {
             avg_row_size_bytes: avg_row_size,
             output_file: self.config.output_file.clone(),
         })
+    }
+
+    fn try_direct_export(&self, db: &mut dyn Database) -> Result<(u64, u64)> {
+        let file = File::create(&self.config.output_file)?;
+        let mut writer: Box<dyn Write> = match self.config.compression {
+            CompressionType::Gzip => Box::new(BufWriter::with_capacity(
+                self.config.buffer_size,
+                GzEncoder::new(file, Compression::default()),
+            )),
+            CompressionType::None => Box::new(BufWriter::with_capacity(self.config.buffer_size, file)),
+        };
+
+        db.direct_export(&self.config.query, writer.as_mut(), &self.config)
     }
 
     fn get_delimiter(config: &ExportConfig) -> u8 {

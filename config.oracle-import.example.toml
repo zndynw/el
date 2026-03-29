@@ -1,0 +1,30 @@
+# Oracle 导入配置示例
+
+[database]
+db_type = "oracle"
+connection_string = "localhost:1521/ORCL"
+username = "system"
+password = "oracle"
+
+[import]
+table = "employees"
+input_file = "employees.csv"
+format = "csv"
+delimiter = ","
+has_header = true
+batch_size = 1000
+null_value = ""
+on_error = "skip"
+transaction_mode = "per_batch"
+show_progress = true
+truncate_table = false
+compression = "none"
+
+[import.column_types]
+employee_id = "integer"
+salary = "decimal"
+hire_date = "date"
+
+[logging]
+log_file = "import.log"
+verbose = false

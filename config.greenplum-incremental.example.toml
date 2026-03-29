@@ -1,0 +1,49 @@
+# Greenplum 增量更新配置示例（使用外部表删除重复数据）
+
+[database]
+db_type = "greenplum"
+connection_string = "localhost:5432/gpdatabase"
+username = "gpadmin"
+password = "password"
+gpfdist_host = "localhost"
+gpfdist_port = 8080
+gpfdist_dir = "/data/gpfdist"
+
+[import]
+table = "fact_orders"
+input_file = "daily_orders.csv"
+format = "csv"
+delimiter = ","
+has_header = true
+batch_size = 10000
+on_error = "skip"
+transaction_mode = "all"
+show_progress = true
+
+[import.column_types]
+order_id = "bigint"
+customer_id = "integer"
+amount = "decimal"
+order_date = "date"
+status = "text"
+
+# 使用外部表进行增量更新
+# {ext_table} 会被替换为实际的外部表名（如 temp_ext_1234567890）
+
+# 导入前：删除今天已存在的订单（避免重复）
+pre_sql = """
+DELETE FROM fact_orders t
+USING {ext_table} e
+WHERE t.order_id = e.order_id
+  AND t.order_date >= CURRENT_DATE
+"""
+
+# 导入后：更新统计信息
+post_sql = "ANALYZE fact_orders"
+
+# 保存错误日志
+error_log_table = "import_errors"
+
+[logging]
+log_file = "import.log"
+verbose = true

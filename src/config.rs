@@ -1,12 +1,18 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub database: DatabaseConfig,
-    pub export: ExportConfig,
+    #[serde(default)]
+    pub export: Option<ExportConfig>,
+    #[serde(default)]
+    pub import: Option<ImportConfig>,
+    #[serde(default)]
+    pub vars: HashMap<String, String>,
     #[serde(default)]
     pub logging: LoggingConfig,
 }
@@ -16,6 +22,8 @@ pub struct LoggingConfig {
     #[serde(default)]
     pub log_file: Option<String>,
     #[serde(default)]
+    pub tag: Option<String>,
+    #[serde(default)]
     pub verbose: bool,
 }
 
@@ -23,6 +31,7 @@ impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
             log_file: None,
+            tag: None,
             verbose: false,
         }
     }
@@ -33,9 +42,16 @@ pub struct DatabaseConfig {
     pub db_type: String,
     pub connection_string: String,
     pub username: String,
+    #[serde(default)]
     pub password: String,
     #[serde(default = "default_fetch_size")]
     pub fetch_size: usize,
+    #[serde(default)]
+    pub gpfdist_host: Option<String>,
+    #[serde(default)]
+    pub gpfdist_port: Option<u16>,
+    #[serde(default)]
+    pub gpfdist_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +73,8 @@ pub struct ExportConfig {
     pub progress_interval: u64,
     #[serde(default)]
     pub skip_errors: bool,
+    #[serde(default)]
+    pub count_rows: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,6 +147,9 @@ impl Default for DatabaseConfig {
             username: String::new(),
             password: String::new(),
             fetch_size: default_fetch_size(),
+            gpfdist_host: None,
+            gpfdist_port: None,
+            gpfdist_dir: None,
         }
     }
 }
@@ -138,5 +159,179 @@ impl Config {
         let content = fs::read_to_string(path)?;
         let config: Config = toml::from_str(&content)?;
         Ok(config)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportConfig {
+    #[serde(default)]
+    pub schema: Option<String>,
+    pub table: String,
+    pub input_file: String,
+    #[serde(default)]
+    pub source_columns: Option<Vec<String>>,
+    #[serde(default)]
+    pub target_columns: Option<Vec<String>>,
+    #[serde(default)]
+    pub column_mapping: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub column_expressions: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub skip_columns: Option<Vec<String>>,
+    #[serde(default)]
+    pub column_types: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub format: ImportFormat,
+    #[serde(default = "default_delimiter")]
+    pub delimiter: String,
+    #[serde(default)]
+    pub escape: Option<String>,
+    #[serde(default = "default_true")]
+    pub has_header: bool,
+    #[serde(default = "default_batch_size")]
+    pub batch_size: usize,
+    #[serde(default)]
+    pub null_value: String,
+    #[serde(default)]
+    pub on_error: ErrorStrategy,
+    #[serde(default)]
+    pub transaction_mode: TransactionMode,
+    #[serde(default)]
+    pub show_progress: bool,
+    #[serde(default = "default_progress_interval")]
+    pub progress_interval: u64,
+    #[serde(default)]
+    pub truncate_table: bool,
+    #[serde(default)]
+    pub pre_sql: Option<String>,
+    #[serde(default)]
+    pub post_sql: Option<String>,
+    #[serde(default)]
+    pub error_log_table: Option<String>,
+    #[serde(default)]
+    pub compression: CompressionType,
+}
+
+impl ImportConfig {
+    pub fn resolved_schema(&self) -> Option<&str> {
+        self.schema.as_deref()
+    }
+
+    pub fn resolved_table(&self) -> &str {
+        &self.table
+    }
+
+    pub fn qualified_target_table(&self) -> String {
+        if let Some(schema) = self.resolved_schema() {
+            format!("{}.{}", schema, self.resolved_table())
+        } else {
+            self.resolved_table().to_string()
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImportFormat {
+    Csv,
+    Tsv,
+    Custom,
+}
+
+impl Default for ImportFormat {
+    fn default() -> Self {
+        Self::Csv
+    }
+}
+
+impl FromStr for ImportFormat {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.to_lowercase().as_str() {
+            "csv" => Ok(Self::Csv),
+            "tsv" => Ok(Self::Tsv),
+            "custom" => Ok(Self::Custom),
+            _ => Err(format!("unsupported import format: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ErrorStrategy {
+    Skip,
+    Abort,
+}
+
+impl Default for ErrorStrategy {
+    fn default() -> Self {
+        Self::Skip
+    }
+}
+
+impl FromStr for ErrorStrategy {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.to_lowercase().as_str() {
+            "skip" => Ok(Self::Skip),
+            "abort" => Ok(Self::Abort),
+            _ => Err(format!("unsupported error strategy: {value}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransactionMode {
+    PerBatch,
+    All,
+    None,
+}
+
+impl Default for TransactionMode {
+    fn default() -> Self {
+        Self::PerBatch
+    }
+}
+
+impl FromStr for TransactionMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        match value.to_lowercase().as_str() {
+            "per_batch" => Ok(Self::PerBatch),
+            "all" => Ok(Self::All),
+            "none" => Ok(Self::None),
+            _ => Err(format!("unsupported transaction mode: {value}")),
+        }
+    }
+}
+
+fn default_batch_size() -> usize {
+    1000
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn parses_database_config_without_password() {
+        let raw = r#"
+[database]
+db_type = "postgresql"
+connection_string = "localhost:5432/testdb"
+username = "postgres"
+"#;
+
+        let config: Config = toml::from_str(raw).expect("config should parse without password");
+
+        assert_eq!(config.database.password, "");
     }
 }

@@ -1,0 +1,22 @@
+# Oracle 导出配置示例
+
+[database]
+db_type = "oracle"
+connection_string = "localhost:1521/ORCL"
+username = "system"
+password = "oracle"
+fetch_size = 10000
+
+[export]
+query = "SELECT * FROM employees WHERE hire_date >= TO_DATE('2024-01-01', 'YYYY-MM-DD')"
+output_file = "employees.csv"
+format = "csv"
+delimiter = ","
+include_header = true
+show_progress = true
+progress_interval = 50000
+compression = "none"
+
+[logging]
+log_file = "export.log"
+verbose = false

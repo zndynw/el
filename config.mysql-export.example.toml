@@ -1,0 +1,23 @@
+# MySQL 导出配置示例
+
+[database]
+db_type = "mysql"
+connection_string = "localhost:3306/mydb"
+# 或使用完整 URL: connection_string = "mysql://localhost:3306/mydb"
+username = "root"
+password = "password"
+fetch_size = 10000
+
+[export]
+query = "SELECT * FROM orders WHERE order_date >= '2024-01-01'"
+output_file = "orders.csv"
+format = "csv"
+delimiter = ","
+include_header = true
+show_progress = true
+progress_interval = 100000
+compression = "gzip"  # 输出压缩文件
+
+[logging]
+log_file = "export.log"
+verbose = false

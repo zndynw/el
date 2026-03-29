@@ -2,13 +2,21 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(name = "el")]
-#[command(about = "数据导出导入工具 - Data Export/Import Tool", long_about = None)]
+#[command(about = "Data Export/Import Tool")]
 pub struct Cli {
-    /// 详细日志 (Verbose logging)
+    /// Enable verbose logging
     #[arg(short, long, global = true, conflicts_with = "quiet")]
     pub verbose: bool,
 
-    /// 关闭详细日志 (Disable verbose logging)
+    /// Custom log tag
+    #[arg(long, global = true)]
+    pub log_tag: Option<String>,
+
+    /// Template variable override, format: key=value
+    #[arg(long = "var", global = true)]
+    pub vars: Vec<String>,
+
+    /// Disable verbose logging
     #[arg(long, global = true, action = ArgAction::SetTrue, conflicts_with = "verbose")]
     pub quiet: bool,
 
@@ -30,83 +38,95 @@ impl Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// 导出数据 (Export data)
+    /// Export data
     Export(ExportArgs),
+    /// Import data
+    Import(ImportArgs),
+    /// Generate a config template
+    Init(InitArgs),
 }
 
 #[derive(Args, Debug, Clone)]
 pub struct ExportArgs {
-    /// 配置文件路径 (Config file path)
-    #[arg(short, long)]
+    /// Config file path
+    #[arg(short, long, help_heading = "Common")]
     pub config: Option<String>,
 
-    /// 数据库类型 (Database type: oracle/mysql/postgresql)
-    #[arg(long)]
-    pub db_type: Option<String>,
-
-    /// 数据库连接字符串 (Database connection string: host:port/service_name)
-    #[arg(long)]
-    pub conn: Option<String>,
-
-    /// 用户名 (Username)
-    #[arg(long)]
-    pub username: Option<String>,
-
-    /// 密码 (Password)
-    #[arg(long)]
-    pub password: Option<String>,
-
-    /// 查询SQL或SQL文件路径 (Query SQL or SQL file path)
-    #[arg(long)]
+    /// Query SQL or SQL file path
+    #[arg(long, help_heading = "Common")]
     pub query: Option<String>,
 
-    /// 输出文件 (Output file)
-    #[arg(short, long)]
+    /// Output file path
+    #[arg(short, long, help_heading = "Common")]
     pub output: Option<String>,
 
-    /// 导出格式 (Export format: csv/tsv/custom)
-    #[arg(long)]
+    /// Export format: csv/tsv/custom
+    #[arg(long, help_heading = "Common")]
     pub format: Option<String>,
 
-    /// 分隔符 (Delimiter)
-    #[arg(long)]
+    /// Delimiter for custom format
+    #[arg(long, help_heading = "Common")]
     pub delimiter: Option<String>,
 
-    /// 显示进度 (Show progress)
-    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_progress")]
+    /// Show progress
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_progress", help_heading = "Common")]
     pub progress: bool,
 
-    /// 不显示进度 (Do not show progress)
-    #[arg(long = "no-progress", action = ArgAction::SetTrue, conflicts_with = "progress")]
+    /// Do not show progress
+    #[arg(long = "no-progress", action = ArgAction::SetTrue, conflicts_with = "progress", help_heading = "Common")]
     pub no_progress: bool,
 
-    /// 批量获取大小 (Fetch size)
-    #[arg(long)]
-    pub fetch: Option<usize>,
-
-    /// 包含表头 (Include header)
-    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_header")]
+    /// Include header
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_header", help_heading = "Common")]
     pub header: bool,
 
-    /// 不包含表头 (Do not include header)
-    #[arg(long = "no-header", action = ArgAction::SetTrue, conflicts_with = "header")]
+    /// Do not include header
+    #[arg(long = "no-header", action = ArgAction::SetTrue, conflicts_with = "header", help_heading = "Common")]
     pub no_header: bool,
 
-    /// 缓冲区大小（字节） (Buffer size in bytes)
-    #[arg(long)]
+    /// Database type: oracle/mysql/postgresql
+    #[arg(long, help_heading = "Database")]
+    pub db_type: Option<String>,
+
+    /// Database connection string
+    #[arg(long, help_heading = "Database")]
+    pub conn: Option<String>,
+
+    /// Username
+    #[arg(long, help_heading = "Database")]
+    pub username: Option<String>,
+
+    /// Password
+    #[arg(long, help_heading = "Database")]
+    pub password: Option<String>,
+
+    /// Fetch size
+    #[arg(long, help_heading = "Advanced")]
+    pub fetch: Option<usize>,
+
+    /// Buffer size in bytes
+    #[arg(long, help_heading = "Advanced")]
     pub buffer_size: Option<usize>,
 
-    /// 压缩类型 (Compression type: none/gzip)
-    #[arg(long)]
+    /// Compression type: none/gzip
+    #[arg(long, help_heading = "Advanced")]
     pub compression: Option<String>,
 
-    /// 日志文件路径 (Log file path, append mode)
-    #[arg(long)]
+    /// Log file path
+    #[arg(long, help_heading = "Advanced")]
     pub log_file: Option<String>,
 
-    /// 进度输出间隔（行数）(Progress output interval in rows)
-    #[arg(long)]
+    /// Progress output interval in rows
+    #[arg(long, help_heading = "Advanced")]
     pub progress_interval: Option<u64>,
+
+    /// Count rows before export
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_count_rows", help_heading = "Advanced")]
+    pub count_rows: bool,
+
+    /// Do not count rows before export
+    #[arg(long = "no-count-rows", action = ArgAction::SetTrue, conflicts_with = "count_rows", help_heading = "Advanced")]
+    pub no_count_rows: bool,
 }
 
 impl ExportArgs {
@@ -129,4 +149,202 @@ impl ExportArgs {
             None
         }
     }
+
+    pub fn count_rows_override(&self) -> Option<bool> {
+        if self.count_rows {
+            Some(true)
+        } else if self.no_count_rows {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ImportArgs {
+    /// Config file path
+    #[arg(short, long, help_heading = "Common")]
+    pub config: Option<String>,
+
+    /// Target schema name
+    #[arg(long, help_heading = "Common")]
+    pub schema: Option<String>,
+
+    /// Target table name
+    #[arg(long, help_heading = "Common")]
+    pub table: Option<String>,
+
+    /// Input file path, or gpfdist relative path for Greenplum
+    #[arg(short, long, help_heading = "Common")]
+    pub input: Option<String>,
+
+    /// Import format: csv/tsv/custom
+    #[arg(long, help_heading = "Common")]
+    pub format: Option<String>,
+
+    /// Delimiter
+    #[arg(long, help_heading = "Common")]
+    pub delimiter: Option<String>,
+
+    /// Escape character for Greenplum external table format
+    #[arg(long, help_heading = "Common")]
+    pub escape: Option<String>,
+
+    /// Show progress
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_progress", help_heading = "Common")]
+    pub progress: bool,
+
+    /// Do not show progress
+    #[arg(long = "no-progress", action = ArgAction::SetTrue, conflicts_with = "progress", help_heading = "Common")]
+    pub no_progress: bool,
+
+    /// Input file has header
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_header", help_heading = "Common")]
+    pub header: bool,
+
+    /// Input file has no header
+    #[arg(long = "no-header", action = ArgAction::SetTrue, conflicts_with = "header", help_heading = "Common")]
+    pub no_header: bool,
+
+    /// Database type: oracle/mysql/postgresql/greenplum
+    #[arg(long, help_heading = "Database")]
+    pub db_type: Option<String>,
+
+    /// Database connection string
+    #[arg(long, help_heading = "Database")]
+    pub conn: Option<String>,
+
+    /// Username
+    #[arg(long, help_heading = "Database")]
+    pub username: Option<String>,
+
+    /// Password
+    #[arg(long, help_heading = "Database")]
+    pub password: Option<String>,
+
+    /// Source column names, comma separated
+    #[arg(long, help_heading = "Advanced")]
+    pub source_columns: Option<String>,
+
+    /// Target column names, comma separated
+    #[arg(long, help_heading = "Advanced")]
+    pub target_columns: Option<String>,
+
+    /// Column mapping: source_col:target_col,...
+    #[arg(long, help_heading = "Advanced")]
+    pub column_mapping: Option<String>,
+
+    /// Skip columns, comma separated
+    #[arg(long, help_heading = "Advanced")]
+    pub skip_columns: Option<String>,
+
+    /// Column types: col:type,...
+    #[arg(long, help_heading = "Advanced")]
+    pub column_types: Option<String>,
+
+    /// Batch size
+    #[arg(long, help_heading = "Advanced")]
+    pub batch_size: Option<usize>,
+
+    /// Null value representation
+    #[arg(long, help_heading = "Advanced")]
+    pub null_value: Option<String>,
+
+    /// Error strategy: skip/abort
+    #[arg(long, help_heading = "Advanced")]
+    pub on_error: Option<String>,
+
+    /// Transaction mode: per_batch/all/none
+    #[arg(long, help_heading = "Advanced")]
+    pub transaction: Option<String>,
+
+    /// Truncate target table before import
+    #[arg(long, action = ArgAction::SetTrue, help_heading = "Advanced")]
+    pub truncate: bool,
+
+    /// Pre-import SQL
+    #[arg(long, help_heading = "Advanced")]
+    pub pre_sql: Option<String>,
+
+    /// Post-import SQL
+    #[arg(long, help_heading = "Advanced")]
+    pub post_sql: Option<String>,
+
+    /// Compression type: none/gzip
+    #[arg(long, help_heading = "Advanced")]
+    pub compression: Option<String>,
+
+    /// Log file path
+    #[arg(long, help_heading = "Advanced")]
+    pub log_file: Option<String>,
+
+    /// Progress interval in rows
+    #[arg(long, help_heading = "Advanced")]
+    pub progress_interval: Option<u64>,
+
+    /// Error log table for Greenplum
+    #[arg(long, help_heading = "Greenplum")]
+    pub error_log_table: Option<String>,
+
+    /// Greenplum gpfdist host
+    #[arg(long, help_heading = "Greenplum")]
+    pub gpfdist_host: Option<String>,
+
+    /// Greenplum gpfdist port
+    #[arg(long, help_heading = "Greenplum")]
+    pub gpfdist_port: Option<u16>,
+
+    /// Greenplum gpfdist directory, only used by legacy rewrite path
+    #[arg(long, help_heading = "Greenplum")]
+    pub gpfdist_dir: Option<String>,
+}
+
+impl ImportArgs {
+    pub fn progress_override(&self) -> Option<bool> {
+        if self.progress {
+            Some(true)
+        } else if self.no_progress {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    pub fn header_override(&self) -> Option<bool> {
+        if self.header {
+            Some(true)
+        } else if self.no_header {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct InitArgs {
+    /// Template id to use
+    #[arg(short, long, help_heading = "Selection")]
+    pub template: Option<String>,
+
+    /// Database type shortcut: postgresql/mysql/oracle/greenplum
+    #[arg(long = "db-type", help_heading = "Selection")]
+    pub db_type: Option<String>,
+
+    /// Template mode shortcut: import/export
+    #[arg(long, help_heading = "Selection")]
+    pub mode: Option<String>,
+
+    /// List available templates
+    #[arg(long, action = ArgAction::SetTrue, help_heading = "Selection")]
+    pub list: bool,
+
+    /// Output file path
+    #[arg(short, long, help_heading = "Output")]
+    pub output: Option<String>,
+
+    /// Overwrite output file if it already exists
+    #[arg(long, action = ArgAction::SetTrue, help_heading = "Output")]
+    pub force: bool,
 }

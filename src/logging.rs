@@ -1,18 +1,101 @@
 use anyhow::Result;
 use chrono::Local;
 use std::fmt as stdfmt;
-use tracing_subscriber::fmt::{format::Writer, layer as fmt_layer, time::FormatTime};
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing::{Event, Subscriber};
+use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
+use tracing_subscriber::fmt::{FmtContext, FormattedFields, layer as fmt_layer};
+use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::{EnvFilter, field::Visit, layer::SubscriberExt, util::SubscriberInitExt};
 
-struct LocalTimer;
+struct LogFormatter {
+    tag: Option<String>,
+}
 
-impl FormatTime for LocalTimer {
-    fn format_time(&self, w: &mut Writer<'_>) -> stdfmt::Result {
-        write!(w, "{}", Local::now().format("%Y-%m-%d %H:%M:%S%.3f"))
+struct EventFieldVisitor {
+    message: Option<String>,
+    fields: Vec<String>,
+}
+
+impl EventFieldVisitor {
+    fn new() -> Self {
+        Self {
+            message: None,
+            fields: Vec::new(),
+        }
     }
 }
 
-pub fn init_tracing(log_file: Option<&str>, verbose: bool) -> Result<()> {
+impl Visit for EventFieldVisitor {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            self.message = Some(value.to_string());
+        } else {
+            self.fields.push(format!(r#"{}="{}""#, field.name(), value));
+        }
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            if self.message.is_none() {
+                self.message = Some(format!("{value:?}"));
+            }
+        } else {
+            self.fields.push(format!("{}={value:?}", field.name()));
+        }
+    }
+}
+
+impl<S, N> FormatEvent<S, N> for LogFormatter
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'writer> FormatFields<'writer> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &Event<'_>,
+    ) -> stdfmt::Result {
+        write!(
+            writer,
+            "{} {:>5}",
+            Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+            event.metadata().level(),
+        )?;
+
+        if let Some(tag) = &self.tag {
+            write!(writer, " [{}]", tag)?;
+        }
+
+        write!(writer, " {}", event.metadata().target())?;
+
+        let mut visitor = EventFieldVisitor::new();
+        event.record(&mut visitor);
+
+        if let Some(message) = visitor.message {
+            write!(writer, ": {}", message)?;
+        } else {
+            write!(writer, ":")?;
+        }
+
+        if !visitor.fields.is_empty() {
+            write!(writer, " {}", visitor.fields.join(" "))?;
+        }
+
+        for span in ctx.event_scope().into_iter().flat_map(|scope| scope.from_root()) {
+            let ext = span.extensions();
+            if let Some(fields) = ext.get::<FormattedFields<N>>() {
+                if !fields.is_empty() {
+                    write!(writer, " {}", fields)?;
+                }
+            }
+        }
+
+        writeln!(writer)
+    }
+}
+
+pub fn init_tracing(log_file: Option<&str>, tag: Option<&str>, verbose: bool) -> Result<()> {
     let level = if verbose { "debug" } else { "info" };
 
     let env_filter = if std::env::var("RUST_LOG").is_ok() {
@@ -35,15 +118,22 @@ pub fn init_tracing(log_file: Option<&str>, verbose: bool) -> Result<()> {
             .with(env_filter)
             .with(
                 fmt_layer()
+                    .event_format(LogFormatter {
+                        tag: tag.map(ToOwned::to_owned),
+                    })
                     .with_writer(file_appender)
-                    .with_ansi(false)
-                    .with_timer(LocalTimer),
+                    .with_ansi(false),
             )
             .init();
     } else {
         tracing_subscriber::registry()
             .with(env_filter)
-            .with(fmt_layer().with_timer(LocalTimer))
+            .with(
+                fmt_layer()
+                    .event_format(LogFormatter {
+                        tag: tag.map(ToOwned::to_owned),
+                    }),
+            )
             .init();
     }
 

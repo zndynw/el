@@ -1,0 +1,25 @@
+# PostgreSQL configuration example
+
+[database]
+db_type = "postgresql"
+connection_string = "localhost:5432/testdb"
+username = "postgres"
+password = "password"
+fetch_size = 1000
+
+[export]
+query = "SELECT * FROM users LIMIT 10"
+output_file = "output_pg.csv"
+format = "csv"
+delimiter = "\u0003"
+show_progress = true
+progress_interval = 1000
+include_header = true
+buffer_size = 1048576
+compression = "none"
+skip_errors = false
+# Count rows before export (executes COUNT query first, may be slow for large tables)
+count_rows = true
+
+[logging]
+verbose = true

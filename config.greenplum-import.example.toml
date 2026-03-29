@@ -1,0 +1,47 @@
+# Greenplum 导入配置示例（使用 gpfdist 外部表）
+
+[database]
+db_type = "greenplum"
+connection_string = "localhost:5432/gpdatabase"
+username = "gpadmin"
+password = "password"
+
+# gpfdist 配置（需提前启动 gpfdist 服务）
+# 启动命令: gpfdist -d /data/gpfdist -p 8080 &
+gpfdist_host = "localhost"
+gpfdist_port = 8080
+gpfdist_dir = "/data/gpfdist"
+
+[import]
+table = "fact_sales"
+input_file = "sales.csv"
+format = "csv"
+delimiter = ","
+has_header = true
+batch_size = 10000
+null_value = ""
+on_error = "skip"
+transaction_mode = "all"
+show_progress = true
+truncate_table = false
+compression = "none"
+
+# 重要：Greenplum 外部表需要列类型定义
+[import.column_types]
+sale_id = "bigint"
+product_id = "integer"
+quantity = "integer"
+amount = "decimal"
+sale_date = "date"
+customer_name = "text"
+
+# 可选：保存错误日志到表
+error_log_table = "import_error_log"
+
+# 可选：使用外部表进行增量更新
+# pre_sql = "DELETE FROM fact_sales t USING {ext_table} e WHERE t.sale_id = e.sale_id"
+# post_sql = "ANALYZE fact_sales"
+
+[logging]
+log_file = "import.log"
+verbose = true

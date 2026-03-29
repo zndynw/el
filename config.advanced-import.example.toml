@@ -1,0 +1,51 @@
+# 高级导入配置示例：列映射、过滤、类型转换
+
+[database]
+db_type = "postgresql"
+connection_string = "localhost:5432/mydb"
+username = "postgres"
+password = "password"
+
+[import]
+table = "target_table"
+input_file = "source_data.csv"
+format = "csv"
+delimiter = ","
+has_header = true
+batch_size = 1000
+null_value = "NULL"
+on_error = "skip"
+transaction_mode = "per_batch"
+show_progress = true
+compression = "none"
+truncate_table = true
+
+# 场景：CSV 有 6 列 [user_id, user_name, age, temp_field, email, created]
+# 目标表有 5 列 [id, name, age, email, created_at]
+
+# 指定目标表的列（按顺序）
+target_columns = ["id", "name", "age", "email", "created_at"]
+
+# 列名映射：CSV列名 -> 表列名
+[import.column_mapping]
+user_id = "id"
+user_name = "name"
+created = "created_at"
+
+# 跳过不需要的列
+skip_columns = ["temp_field"]
+
+# 指定列类型进行转换
+[import.column_types]
+id = "integer"
+age = "integer"
+created_at = "timestamp"
+
+# 导入前清空表
+
+# 导入后执行分析
+post_sql = "ANALYZE target_table"
+
+[logging]
+log_file = "import.log"
+verbose = true

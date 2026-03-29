@@ -1,10 +1,12 @@
 use crate::config::DatabaseConfig;
-use crate::db::{Database, QuerySink};
+use crate::db::{Database, ImportSession, ImportStats, QuerySink};
 use crate::value::DbValue;
 use anyhow::{Context, Result, anyhow};
 use oracle::sql_type::{Blob, Clob, IntervalDS, IntervalYM, Nclob, OracleType, Timestamp};
 use oracle::{Connection, Row};
+use std::collections::HashMap;
 use std::io::Read;
+use std::time::Instant;
 use tracing;
 
 pub struct OracleDatabase {
@@ -187,4 +189,86 @@ impl Database for OracleDatabase {
     fn stream_query(&mut self, query: &str, sink: &mut dyn QuerySink) -> Result<()> {
         self.stream_query_impl(query, sink)
     }
+
+    fn prepare_import(
+        &mut self,
+        table: &str,
+        _external_columns: &[String],
+        _selected_source_columns: &[String],
+        target_columns: &[String],
+        _column_types: &HashMap<String, String>,
+        _config: &crate::config::ImportConfig,
+    ) -> Result<Box<dyn ImportSession>> {
+        let conn = self.connection.take().context("Database not connected")?;
+        Ok(Box::new(OracleImportSession {
+            conn,
+            table: table.to_string(),
+            columns: target_columns.to_vec(),
+            rows_inserted: 0,
+            start_time: Instant::now(),
+        }))
+    }
+}
+
+struct OracleImportSession {
+    conn: Connection,
+    table: String,
+    columns: Vec<String>,
+    rows_inserted: u64,
+    start_time: Instant,
+}
+
+impl ImportSession for OracleImportSession {
+    fn insert_batch(&mut self, rows: &[Vec<DbValue>]) -> Result<usize> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        let placeholders = format!("({})", (1..=self.columns.len()).map(|i| format!(":{}", i)).collect::<Vec<_>>().join(","));
+        let values_clause = vec![placeholders.as_str(); rows.len()].join(",");
+        let sql = format!("INSERT INTO {} ({}) VALUES {}",
+            self.table, self.columns.join(","), values_clause);
+
+        let mut stmt = self.conn.statement(&sql).build()?;
+
+        let mut param_index = 1;
+        for row in rows {
+            for value in row {
+                bind_oracle_value(&mut stmt, param_index, value)?;
+                param_index += 1;
+            }
+        }
+
+        stmt.execute(&[])?;
+        self.rows_inserted += rows.len() as u64;
+        Ok(rows.len())
+    }
+
+    fn commit(&mut self) -> Result<()> {
+        self.conn.commit()?;
+        Ok(())
+    }
+
+    fn finish(self: Box<Self>) -> Result<ImportStats> {
+        Ok(ImportStats {
+            rows_inserted: self.rows_inserted,
+            rows_failed: 0,
+            duration: self.start_time.elapsed(),
+        })
+    }
+}
+
+fn bind_oracle_value(stmt: &mut oracle::Statement, index: usize, value: &DbValue) -> Result<()> {
+    match value {
+        DbValue::Null => stmt.bind(index, &None::<String>)?,
+        DbValue::Boolean(b) => stmt.bind(index, b)?,
+        DbValue::Integer(i) => stmt.bind(index, i)?,
+        DbValue::UnsignedInteger(u) => stmt.bind(index, &(*u as i64))?,
+        DbValue::Float(f) => stmt.bind(index, f)?,
+        DbValue::Decimal(s) | DbValue::Text(s) | DbValue::Date(s)
+        | DbValue::DateTime(s) | DbValue::Time(s) | DbValue::Interval(s)
+        | DbValue::Json(s) => stmt.bind(index, s)?,
+        DbValue::Binary(b) => stmt.bind(index, b)?,
+    }
+    Ok(())
 }

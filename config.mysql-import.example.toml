@@ -1,0 +1,30 @@
+# MySQL 导入配置示例
+
+[database]
+db_type = "mysql"
+connection_string = "localhost:3306/mydb"
+username = "root"
+password = "password"
+
+[import]
+table = "orders"
+input_file = "orders.csv.gz"
+format = "csv"
+delimiter = ","
+has_header = true
+batch_size = 5000
+null_value = ""
+on_error = "skip"
+transaction_mode = "per_batch"
+show_progress = true
+truncate_table = false
+compression = "gzip"  # 读取压缩文件
+
+[import.column_types]
+order_id = "integer"
+amount = "decimal"
+order_date = "date"
+
+[logging]
+log_file = "import.log"
+verbose = false

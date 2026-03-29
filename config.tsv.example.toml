@@ -1,0 +1,32 @@
+# TSV 格式导入导出配置示例
+
+[database]
+db_type = "postgresql"
+connection_string = "localhost:5432/mydb"
+username = "postgres"
+password = "password"
+
+[export]
+query = "SELECT * FROM products"
+output_file = "products.tsv"
+format = "tsv"  # Tab 分隔
+include_header = true
+show_progress = true
+compression = "none"
+
+[import]
+table = "products"
+input_file = "products.tsv"
+format = "tsv"  # Tab 分隔
+has_header = true
+batch_size = 1000
+on_error = "skip"
+transaction_mode = "per_batch"
+show_progress = true
+
+[import.column_types]
+product_id = "integer"
+price = "decimal"
+
+[logging]
+verbose = false

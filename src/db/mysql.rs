@@ -1,10 +1,12 @@
 use crate::config::DatabaseConfig;
-use crate::db::{Database, QuerySink};
+use crate::db::{Database, ImportSession, ImportStats, QuerySink};
 use crate::value::DbValue;
 use anyhow::{Context, Result, anyhow};
 use mysql::consts::ColumnType;
 use mysql::prelude::Queryable;
 use mysql::{Column, Conn, Opts, OptsBuilder, Row, Value};
+use std::collections::HashMap;
+use std::time::Instant;
 use tracing;
 
 pub struct MySqlDatabase {
@@ -103,6 +105,81 @@ impl Database for MySqlDatabase {
 
     fn stream_query(&mut self, query: &str, sink: &mut dyn QuerySink) -> Result<()> {
         self.stream_query_impl(query, sink)
+    }
+
+    fn prepare_import(
+        &mut self,
+        table: &str,
+        _external_columns: &[String],
+        _selected_source_columns: &[String],
+        target_columns: &[String],
+        _column_types: &HashMap<String, String>,
+        _config: &crate::config::ImportConfig,
+    ) -> Result<Box<dyn ImportSession>> {
+        let conn = self.connection.take().context("Database not connected")?;
+        Ok(Box::new(MysqlImportSession {
+            conn,
+            table: table.to_string(),
+            columns: target_columns.to_vec(),
+            rows_inserted: 0,
+            start_time: Instant::now(),
+        }))
+    }
+}
+
+struct MysqlImportSession {
+    conn: Conn,
+    table: String,
+    columns: Vec<String>,
+    rows_inserted: u64,
+    start_time: Instant,
+}
+
+impl ImportSession for MysqlImportSession {
+    fn insert_batch(&mut self, rows: &[Vec<DbValue>]) -> Result<usize> {
+        if rows.is_empty() {
+            return Ok(0);
+        }
+
+        let placeholders = format!("({})", vec!["?"; self.columns.len()].join(","));
+        let values_clause = vec![placeholders.as_str(); rows.len()].join(",");
+        let sql = format!("INSERT INTO {} ({}) VALUES {}",
+            self.table, self.columns.join(","), values_clause);
+
+        let params: Vec<Value> = rows.iter()
+            .flat_map(|row| row.iter().map(db_value_to_mysql_value))
+            .collect();
+
+        self.conn.exec_drop(&sql, params)?;
+        self.rows_inserted += rows.len() as u64;
+        Ok(rows.len())
+    }
+
+    fn commit(&mut self) -> Result<()> {
+        self.conn.query_drop("COMMIT")?;
+        Ok(())
+    }
+
+    fn finish(self: Box<Self>) -> Result<ImportStats> {
+        Ok(ImportStats {
+            rows_inserted: self.rows_inserted,
+            rows_failed: 0,
+            duration: self.start_time.elapsed(),
+        })
+    }
+}
+
+fn db_value_to_mysql_value(value: &DbValue) -> Value {
+    match value {
+        DbValue::Null => Value::NULL,
+        DbValue::Boolean(b) => Value::Int(*b as i64),
+        DbValue::Integer(i) => Value::Int(*i),
+        DbValue::UnsignedInteger(u) => Value::UInt(*u),
+        DbValue::Float(f) => Value::Double(*f),
+        DbValue::Decimal(s) | DbValue::Text(s) | DbValue::Date(s)
+        | DbValue::DateTime(s) | DbValue::Time(s) | DbValue::Interval(s)
+        | DbValue::Json(s) => Value::Bytes(s.as_bytes().to_vec()),
+        DbValue::Binary(b) => Value::Bytes(b.clone()),
     }
 }
 
