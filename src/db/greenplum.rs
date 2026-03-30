@@ -94,6 +94,11 @@ impl Database for GreenplumDatabase {
         Err(anyhow!("Greenplum stream_query not implemented, use PostgreSQL driver"))
     }
 
+    fn execute_sql(&mut self, sql: &str) -> Result<u64> {
+        let conn = self.connection.as_mut().context("Database not connected")?;
+        Ok(conn.execute(sql, &[])?)
+    }
+
     fn direct_import(&mut self, config: &ImportConfig) -> Result<Option<ImportStats>> {
         let conn = self.connection.as_mut().context("Database not connected")?;
         let gpfdist_host = self
@@ -172,17 +177,21 @@ impl Database for GreenplumDatabase {
                 tracing::info!("post_sql affected {} rows", affected);
             }
 
-            if let Some(err_table) = &config.error_log_table {
-                let save_errors_sql = format!(
-                    "INSERT INTO {} SELECT *, now() as log_time FROM gp_read_error_log('{}')",
-                    err_table, temp_table
+            let rows_failed = if let Some(err_table) = &config.error_log_table {
+                let affected = save_greenplum_errors(conn, err_table, &temp_table)?;
+                tracing::info!(
+                    "error_log_table captured {} failed rows into {}",
+                    affected,
+                    err_table
                 );
-                let _ = conn.execute(&save_errors_sql, &[]);
-            }
+                affected
+            } else {
+                count_greenplum_errors(conn, &temp_table)?
+            };
 
             Ok(ImportStats {
                 rows_inserted,
-                rows_failed: 0,
+                rows_failed,
                 duration: start_time.elapsed(),
             })
         })();
@@ -231,8 +240,9 @@ impl Database for GreenplumDatabase {
             gpfdist_url,
             temp_file_path,
             data_file: None,
-            error_log_table: None,
+            error_log_table: config.error_log_table.clone(),
             rows_inserted: 0,
+            rows_failed: 0,
             start_time: Instant::now(),
         }))
     }
@@ -259,6 +269,7 @@ struct GreenplumExternalSession {
     data_file: Option<File>,
     error_log_table: Option<String>,
     rows_inserted: u64,
+    rows_failed: u64,
     start_time: Instant,
 }
 
@@ -304,10 +315,6 @@ impl ImportSession for GreenplumExternalSession {
         Ok(())
     }
 
-    fn external_table_name(&self) -> Option<&str> {
-        Some(&self.temp_table)
-    }
-
     fn finish(mut self: Box<Self>) -> Result<ImportStats> {
         if let Some(mut file) = self.data_file.take() {
             file.flush()?;
@@ -323,11 +330,15 @@ impl ImportSession for GreenplumExternalSession {
             self.conn.execute(&insert_sql, &[])?;
 
             if let Some(err_table) = &self.error_log_table {
-                let save_errors_sql = format!(
-                    "INSERT INTO {} SELECT *, now() as log_time FROM gp_read_error_log('{}')",
-                    err_table, self.temp_table
+                self.rows_failed =
+                    save_greenplum_errors(&mut self.conn, err_table, &self.temp_table)?;
+                tracing::info!(
+                    "error_log_table captured {} failed rows into {}",
+                    self.rows_failed,
+                    err_table
                 );
-                let _ = self.conn.execute(&save_errors_sql, &[]);
+            } else {
+                self.rows_failed = count_greenplum_errors(&mut self.conn, &self.temp_table)?;
             }
 
             let drop_sql = format!("DROP EXTERNAL TABLE IF EXISTS {}", self.temp_table);
@@ -338,7 +349,7 @@ impl ImportSession for GreenplumExternalSession {
 
         Ok(ImportStats {
             rows_inserted: self.rows_inserted,
-            rows_failed: 0,
+            rows_failed: self.rows_failed,
             duration: self.start_time.elapsed(),
         })
     }
@@ -489,6 +500,14 @@ mod tests {
         assert!(column_defs.contains("id_raw VARCHAR(30)"));
         assert!(column_defs.contains("created_raw TIMESTAMP(7)"));
         assert!(column_defs.contains("amount NUMERIC(16,2)"));
+    }
+
+    #[test]
+    fn base_import_config_can_enable_error_log_table() {
+        let mut config = base_import_config();
+        config.error_log_table = Some("ext_error_table".to_string());
+
+        assert_eq!(config.error_log_table.as_deref(), Some("ext_error_table"));
     }
 }
 
@@ -719,4 +738,19 @@ fn optional_escape_clause(escape: Option<&str>) -> String {
         }
         _ => String::new(),
     }
+}
+
+fn save_greenplum_errors(conn: &mut Client, err_table: &str, ext_table: &str) -> Result<u64> {
+    let save_errors_sql = format!(
+        "INSERT INTO {} SELECT *, now() as log_time FROM gp_read_error_log('{}')",
+        err_table, ext_table
+    );
+    Ok(conn.execute(&save_errors_sql, &[])?)
+}
+
+fn count_greenplum_errors(conn: &mut Client, ext_table: &str) -> Result<u64> {
+    let count_errors_sql = format!("SELECT COUNT(*) FROM gp_read_error_log('{}')", ext_table);
+    let row = conn.query_one(&count_errors_sql, &[])?;
+    let count: i64 = row.get(0);
+    Ok(count.max(0) as u64)
 }

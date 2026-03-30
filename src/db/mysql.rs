@@ -107,6 +107,12 @@ impl Database for MySqlDatabase {
         self.stream_query_impl(query, sink)
     }
 
+    fn execute_sql(&mut self, sql: &str) -> Result<u64> {
+        let conn = self.connection.as_mut().context("Database not connected")?;
+        conn.query_drop(sql)?;
+        Ok(conn.affected_rows())
+    }
+
     fn prepare_import(
         &mut self,
         table: &str,

@@ -190,6 +190,12 @@ impl Database for OracleDatabase {
         self.stream_query_impl(query, sink)
     }
 
+    fn execute_sql(&mut self, sql: &str) -> Result<u64> {
+        let conn = self.connection.as_ref().context("Database not connected")?;
+        let stmt = conn.execute(sql, &[])?;
+        Ok(stmt.row_count()?)
+    }
+
     fn prepare_import(
         &mut self,
         table: &str,

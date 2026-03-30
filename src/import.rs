@@ -22,6 +22,10 @@ impl Importer {
         self.db.connect()?;
 
         if let Some(stats) = self.db.direct_import(&self.config)? {
+            tracing::debug!(
+                "direct_import handled by database implementation for {}",
+                self.config.qualified_target_table()
+            );
             tracing::info!(
                 "Import completed: {} rows inserted, {} rows failed, duration: {:?}",
                 stats.rows_inserted,
@@ -44,6 +48,16 @@ impl Importer {
             .map(|&idx| source_columns[idx].clone())
             .collect::<Vec<_>>();
 
+        tracing::debug!("Resolved source columns: {:?}", source_columns);
+        tracing::debug!("Resolved target columns: {:?}", target_columns);
+        tracing::debug!("Selected source columns: {:?}", selected_source_columns);
+        tracing::debug!("Selected column indices: {:?}", column_indices);
+
+        if let Some(sql) = self.config.pre_sql.clone() {
+            tracing::debug!("Executing pre_sql before import session: {}", sql);
+            self.execute_sql(&sql)?;
+        }
+
         let column_types = self.config.column_types.clone().unwrap_or_default();
         let qualified_table = self.config.qualified_target_table();
         let mut session = self
@@ -57,15 +71,10 @@ impl Importer {
                 &self.config,
             )?;
 
-        let ext_table_name = session.external_table_name().map(|s| s.to_string());
-        if let Some(sql) = &self.config.pre_sql {
-            let sql = sql.replace("{ext_table}", ext_table_name.as_deref().unwrap_or(""));
-            self.execute_sql(&sql)?;
-        }
-
         let mut batch = Vec::new();
         let mut row_count = 0u64;
         let mut error_count = 0u64;
+        let mut batch_count = 0u64;
 
         for result in csv_reader.records() {
             match result {
@@ -74,8 +83,15 @@ impl Importer {
                         Ok(values) => {
                             batch.push(values);
                             if batch.len() >= self.config.batch_size {
+                                batch_count += 1;
+                                tracing::debug!(
+                                    "Flushing batch {} with {} rows",
+                                    batch_count,
+                                    batch.len()
+                                );
                                 session.insert_batch(&batch)?;
                                 if self.config.transaction_mode == TransactionMode::PerBatch {
+                                    tracing::debug!("Committing batch {}", batch_count);
                                     session.commit()?;
                                 }
                                 row_count += batch.len() as u64;
@@ -105,20 +121,29 @@ impl Importer {
         }
 
         if !batch.is_empty() {
+            batch_count += 1;
+            tracing::debug!(
+                "Flushing final batch {} with {} rows",
+                batch_count,
+                batch.len()
+            );
             session.insert_batch(&batch)?;
             row_count += batch.len() as u64;
         }
 
         if self.config.transaction_mode == TransactionMode::All {
+            tracing::debug!("Committing final transaction in all mode");
             session.commit()?;
         }
 
-        if let Some(sql) = &self.config.post_sql {
-            let sql = sql.replace("{ext_table}", ext_table_name.as_deref().unwrap_or(""));
+        let stats = session.finish()?;
+
+        if let Some(sql) = self.config.post_sql.clone() {
+            tracing::debug!("Reconnecting for post_sql execution");
+            self.db.connect()?;
+            tracing::debug!("Executing post_sql after import session: {}", sql);
             self.execute_sql(&sql)?;
         }
-
-        let stats = session.finish()?;
 
         tracing::info!("Import completed: {} rows inserted, {} rows failed, duration: {:?}",
             row_count, error_count, stats.duration);
@@ -127,12 +152,19 @@ impl Importer {
     }
 
     fn truncate_table(&mut self) -> Result<()> {
-        tracing::info!("Truncating table {}", self.config.qualified_target_table());
+        let sql = format!("TRUNCATE TABLE {}", self.config.qualified_target_table());
+        let affected = self.db.execute_sql(&sql)?;
+        tracing::info!(
+            "truncate_table executed for {} (affected {} rows)",
+            self.config.qualified_target_table(),
+            affected
+        );
         Ok(())
     }
 
     fn execute_sql(&mut self, sql: &str) -> Result<()> {
-        tracing::info!("Executing SQL: {}", sql);
+        let affected = self.db.execute_sql(sql)?;
+        tracing::info!("Executed SQL (affected {} rows): {}", affected, sql);
         Ok(())
     }
 

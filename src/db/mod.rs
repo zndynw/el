@@ -13,6 +13,10 @@ pub trait Database {
     fn connect(&mut self) -> Result<()>;
     fn stream_query(&mut self, query: &str, sink: &mut dyn QuerySink) -> Result<()>;
 
+    fn execute_sql(&mut self, _sql: &str) -> Result<u64> {
+        Err(anyhow::anyhow!("execute_sql not supported"))
+    }
+
     fn direct_import(&mut self, _config: &crate::config::ImportConfig) -> Result<Option<ImportStats>> {
         Ok(None)
     }
@@ -43,10 +47,6 @@ pub trait ImportSession {
     fn insert_batch(&mut self, rows: &[Vec<DbValue>]) -> Result<usize>;
     fn commit(&mut self) -> Result<()>;
     fn finish(self: Box<Self>) -> Result<ImportStats>;
-
-    fn external_table_name(&self) -> Option<&str> {
-        None
-    }
 }
 
 #[derive(Debug, Default)]

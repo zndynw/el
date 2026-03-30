@@ -128,6 +128,11 @@ impl Database for PostgreSqlDatabase {
         Ok(())
     }
 
+    fn execute_sql(&mut self, sql: &str) -> Result<u64> {
+        let conn = self.connection.as_mut().context("Database not connected")?;
+        Ok(conn.execute(sql, &[])?)
+    }
+
     fn direct_export(&mut self, query: &str, writer: &mut dyn Write, format: &ExportConfig) -> Result<(u64, u64)> {
         let conn = self.connection.as_mut().context("Database not connected")?;
 
