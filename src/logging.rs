@@ -29,9 +29,7 @@ impl Visit for EventFieldVisitor {
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         if field.name() == "message" {
             self.message = Some(value.to_string());
-        } else if should_skip_field(field.name()) {
-            return;
-        } else {
+        } else if !should_skip_field(field.name()) {
             self.fields.push(format!(r#"{}="{}""#, field.name(), value));
         }
     }
@@ -41,19 +39,16 @@ impl Visit for EventFieldVisitor {
             if self.message.is_none() {
                 self.message = Some(format!("{value:?}"));
             }
-        } else if should_skip_field(field.name()) {
-            return;
-        } else {
+        } else if !should_skip_field(field.name()) {
             self.fields.push(format!("{}={value:?}", field.name()));
         }
     }
 }
 
+const SKIP_FIELDS: &[&str] = &["log.file", "log.line", "log.module_path", "code.filepath", "code.lineno"];
+
 fn should_skip_field(name: &str) -> bool {
-    matches!(
-        name,
-        "log.file" | "log.line" | "log.module_path" | "code.filepath" | "code.lineno"
-    )
+    SKIP_FIELDS.contains(&name)
 }
 
 impl<S, N> FormatEvent<S, N> for LogFormatter

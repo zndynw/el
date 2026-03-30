@@ -148,61 +148,10 @@ fn run_import(
         info!("Loading configuration from: {}", config_path);
     }
 
-    tracing::debug!("Import Configuration:");
-    tracing::debug!("  Database type: {}", resolved.database.db_type);
     tracing::debug!(
-        "  Connection string: {}",
-        resolved.database.connection_string
-    );
-    tracing::debug!("  Username: {}", resolved.database.username);
-    tracing::debug!("  Target schema: {:?}", resolved.import.schema);
-    tracing::debug!("  Target table: {}", resolved.import.table);
-    tracing::debug!("  Qualified target: {}", resolved.import.qualified_target_table());
-    tracing::debug!("  Input file: {}", resolved.import.input_file);
-    tracing::debug!("  Format: {:?}", resolved.import.format);
-    tracing::debug!("  Delimiter: {:?}", resolved.import.delimiter);
-    tracing::debug!("  Escape: {:?}", resolved.import.escape);
-    tracing::debug!("  Has header: {}", resolved.import.has_header);
-    tracing::debug!("  Batch size: {}", resolved.import.batch_size);
-    tracing::debug!("  Null value: {:?}", resolved.import.null_value);
-    tracing::debug!("  On error: {:?}", resolved.import.on_error);
-    tracing::debug!(
-        "  Transaction mode: {:?}",
-        resolved.import.transaction_mode
-    );
-    tracing::debug!("  Show progress: {}", resolved.import.show_progress);
-    tracing::debug!(
-        "  Progress interval: {}",
-        resolved.import.progress_interval
-    );
-    tracing::debug!("  Truncate table: {}", resolved.import.truncate_table);
-    tracing::debug!("  Compression: {:?}", resolved.import.compression);
-    tracing::debug!("  Source columns: {:?}", resolved.import.source_columns);
-    tracing::debug!("  Target columns: {:?}", resolved.import.target_columns);
-    tracing::debug!("  Skip columns: {:?}", resolved.import.skip_columns);
-    tracing::debug!("  Column mapping: {:?}", resolved.import.column_mapping);
-    tracing::debug!(
-        "  Column expressions: {:?}",
-        resolved.import.column_expressions
-    );
-    tracing::debug!("  Column types: {:?}", resolved.import.column_types);
-    tracing::debug!("  pre_sql: {:?}", resolved.import.pre_sql);
-    tracing::debug!("  post_sql: {:?}", resolved.import.post_sql);
-    tracing::debug!(
-        "  error_log_table: {:?}",
-        resolved.import.error_log_table
-    );
-    tracing::debug!(
-        "  gpfdist_host: {:?}",
-        resolved.database.gpfdist_host
-    );
-    tracing::debug!(
-        "  gpfdist_port: {:?}",
-        resolved.database.gpfdist_port
-    );
-    tracing::debug!(
-        "  gpfdist_dir: {:?}",
-        resolved.database.gpfdist_dir
+        database = ?resolved.database,
+        import = ?resolved.import,
+        "Import configuration"
     );
 
     info!("Connecting to {} database...", resolved.database.db_type);

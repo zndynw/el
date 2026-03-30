@@ -153,12 +153,8 @@ impl Importer {
 
     fn truncate_table(&mut self) -> Result<()> {
         let sql = format!("TRUNCATE TABLE {}", self.config.qualified_target_table());
-        let affected = self.db.execute_sql(&sql)?;
-        tracing::info!(
-            "truncate_table executed for {} (affected {} rows)",
-            self.config.qualified_target_table(),
-            affected
-        );
+        self.db.execute_sql(&sql)?;
+        tracing::info!("Truncated table {}", self.config.qualified_target_table());
         Ok(())
     }
 
