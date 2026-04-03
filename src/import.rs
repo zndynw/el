@@ -178,9 +178,10 @@ impl Importer {
     }
 
     fn truncate_table(&mut self) -> Result<()> {
-        let sql = format!("TRUNCATE TABLE {}", self.config.qualified_target_table());
+        let table = self.config.qualified_target_table();
+        let sql = format!("TRUNCATE TABLE {}", table);
         self.db.execute_sql(&sql)?;
-        tracing::info!("Truncated table {}", self.config.qualified_target_table());
+        tracing::info!(table = %table, "table_truncated");
         Ok(())
     }
 
