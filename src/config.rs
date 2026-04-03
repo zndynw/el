@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::fs;
 use std::str::FromStr;
 
@@ -37,7 +38,7 @@ impl Default for LoggingConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DatabaseConfig {
     pub db_type: String,
     pub connection_string: String,
@@ -52,6 +53,23 @@ pub struct DatabaseConfig {
     pub gpfdist_port: Option<u16>,
     #[serde(default)]
     pub gpfdist_dir: Option<String>,
+}
+
+impl fmt::Debug for DatabaseConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let password = if self.password.is_empty() { "" } else { "***" };
+
+        f.debug_struct("DatabaseConfig")
+            .field("db_type", &self.db_type)
+            .field("connection_string", &self.connection_string)
+            .field("username", &self.username)
+            .field("password", &password)
+            .field("fetch_size", &self.fetch_size)
+            .field("gpfdist_host", &self.gpfdist_host)
+            .field("gpfdist_port", &self.gpfdist_port)
+            .field("gpfdist_dir", &self.gpfdist_dir)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -320,6 +338,7 @@ fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::Config;
+    use super::DatabaseConfig;
 
     #[test]
     fn parses_database_config_without_password() {
@@ -333,5 +352,25 @@ username = "postgres"
         let config: Config = toml::from_str(raw).expect("config should parse without password");
 
         assert_eq!(config.database.password, "");
+    }
+
+    #[test]
+    fn database_config_debug_redacts_password_only() {
+        let config = DatabaseConfig {
+            db_type: "postgresql".to_string(),
+            connection_string: "postgresql://user:secret@localhost:5432/testdb".to_string(),
+            username: "tester".to_string(),
+            password: "secret".to_string(),
+            fetch_size: 1000,
+            gpfdist_host: Some("localhost".to_string()),
+            gpfdist_port: Some(8080),
+            gpfdist_dir: Some("/tmp".to_string()),
+        };
+
+        let debug = format!("{config:?}");
+
+        assert!(debug.contains(r#"password: "***""#));
+        assert!(!debug.contains(r#"password: "secret""#));
+        assert!(debug.contains("postgresql://user:secret@localhost:5432/testdb"));
     }
 }

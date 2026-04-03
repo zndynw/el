@@ -23,7 +23,7 @@ impl Exporter {
         let start_time = Instant::now();
 
         // Try direct export first (PostgreSQL optimization)
-        if let Ok((bytes_written, row_count)) = self.try_direct_export(db) {
+        if let Ok((_bytes_written, row_count)) = self.try_direct_export(db) {
             let duration = start_time.elapsed();
             let file_size = std::fs::metadata(&self.config.output_file)?.len();
             let avg_row_size = if row_count > 0 {
@@ -31,14 +31,6 @@ impl Exporter {
             } else {
                 0.0
             };
-
-            if self.config.show_progress {
-                if row_count > 0 {
-                    info!("Export completed: {} rows", row_count);
-                } else {
-                    info!("Export completed: {} bytes written", bytes_written);
-                }
-            }
 
             return Ok(ExportStats {
                 rows_exported: row_count,
@@ -65,14 +57,6 @@ impl Exporter {
             )
         };
         let db_read_time = db_start.elapsed().as_secs_f64();
-
-        if self.config.show_progress {
-            if skipped > 0 {
-                info!("Export completed: {} rows ({} skipped)", rows, skipped);
-            } else {
-                info!("Export completed: {} rows", rows);
-            }
-        }
 
         let duration = start_time.elapsed();
         let file_size = std::fs::metadata(&self.config.output_file)?.len();
@@ -101,7 +85,9 @@ impl Exporter {
                 self.config.buffer_size,
                 GzEncoder::new(file, Compression::default()),
             )),
-            CompressionType::None => Box::new(BufWriter::with_capacity(self.config.buffer_size, file)),
+            CompressionType::None => {
+                Box::new(BufWriter::with_capacity(self.config.buffer_size, file))
+            }
         };
 
         db.direct_export(&self.config.query, writer.as_mut(), &self.config)
@@ -215,8 +201,9 @@ impl QuerySink for ExportSink {
                     let elapsed = self.query_started_at.elapsed().as_secs_f64();
                     let speed = self.rows_exported as f64 / elapsed;
                     info!(
-                        "Progress: {} rows exported ({:.2} rows/sec)",
-                        self.rows_exported, speed
+                        rows_exported = self.rows_exported,
+                        speed_rows_per_sec = speed,
+                        "export_progress"
                     );
                 }
                 Ok(())
@@ -224,7 +211,11 @@ impl QuerySink for ExportSink {
             Err(e) => {
                 if self.config.skip_errors {
                     self.rows_skipped += 1;
-                    tracing::warn!("Skipped row due to error: {}", e);
+                    tracing::warn!(
+                        rows_skipped = self.rows_skipped,
+                        reason = %e,
+                        "export_row_skipped"
+                    );
                     Ok(())
                 } else {
                     Err(e.into())
@@ -292,41 +283,32 @@ pub struct ExportStats {
 
 impl ExportStats {
     pub fn print_summary(&self) {
-        info!("Export Summary:");
-        info!("  Output file: {}", self.output_file);
-        info!("  Rows exported: {}", self.rows_exported);
-        if self.rows_skipped > 0 {
-            info!("  Rows skipped: {}", self.rows_skipped);
-        }
-        info!("  Duration: {:.2} seconds", self.duration_secs);
-        info!(
-            "  File size: {} bytes ({:.2} MB)",
-            self.file_size_bytes,
-            self.file_size_bytes as f64 / 1024.0 / 1024.0
-        );
+        let duration_ms = (self.duration_secs * 1000.0).round() as u64;
+        let rows_per_sec = if self.duration_secs > 0.0 {
+            Some(self.rows_exported as f64 / self.duration_secs)
+        } else {
+            None
+        };
+        let throughput_mb_per_sec = if self.rows_exported > 0 && self.duration_secs > 0.0 {
+            Some((self.file_size_bytes as f64 / 1024.0 / 1024.0) / self.duration_secs)
+        } else {
+            None
+        };
 
-        if self.duration_secs > 0.0 {
-            let rows_per_sec = self.rows_exported as f64 / self.duration_secs;
-            info!("  Speed: {:.2} rows/second", rows_per_sec);
-        }
-
-        info!("Performance Details:");
         info!(
-            "  DB read time: {:.2} seconds ({:.1}%)",
-            self.db_read_time_secs,
-            (self.db_read_time_secs / self.duration_secs) * 100.0
+            status = "success",
+            output = %self.output_file,
+            rows_exported = self.rows_exported,
+            rows_skipped = self.rows_skipped,
+            duration_ms = duration_ms,
+            file_size_bytes = self.file_size_bytes,
+            db_read_time_ms = (self.db_read_time_secs * 1000.0).round() as u64,
+            io_write_time_ms = (self.io_write_time_secs * 1000.0).round() as u64,
+            avg_row_size_bytes = self.avg_row_size_bytes,
+            speed_rows_per_sec = rows_per_sec,
+            throughput_mb_per_sec = throughput_mb_per_sec,
+            "export_summary"
         );
-        info!(
-            "  I/O write time: {:.2} seconds ({:.1}%)",
-            self.io_write_time_secs,
-            (self.io_write_time_secs / self.duration_secs) * 100.0
-        );
-        info!("  Average row size: {:.2} bytes", self.avg_row_size_bytes);
-
-        if self.rows_exported > 0 {
-            let mb_per_sec = (self.file_size_bytes as f64 / 1024.0 / 1024.0) / self.duration_secs;
-            info!("  Throughput: {:.2} MB/second", mb_per_sec);
-        }
     }
 }
 
@@ -341,7 +323,10 @@ mod tests {
         write_custom_record(&mut output, "\x03", &["1", "2", "xx\"yy\"zz", "4"])
             .expect("custom record should be written");
 
-        assert_eq!(String::from_utf8(output).unwrap(), "1\x032\x03xx\"yy\"zz\x034\n");
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "1\x032\x03xx\"yy\"zz\x034\n"
+        );
     }
 
     #[test]
@@ -351,6 +336,9 @@ mod tests {
         write_custom_record(&mut output, "\x03", &["col1", "col2", "col3", "col4"])
             .expect("header should be written");
 
-        assert_eq!(String::from_utf8(output).unwrap(), "col1\x03col2\x03col3\x03col4\n");
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "col1\x03col2\x03col3\x03col4\n"
+        );
     }
 }

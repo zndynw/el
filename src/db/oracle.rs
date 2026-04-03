@@ -33,7 +33,11 @@ impl OracleDatabase {
             .enumerate()
             .map(|(index, oracle_type)| {
                 self.read_value(row, index, oracle_type).or_else(|e| {
-                    tracing::warn!("Failed to read column {}: {}", index, e);
+                    tracing::warn!(
+                        column_index = index,
+                        reason = %e,
+                        "column_value_read_failed"
+                    );
                     Ok(DbValue::Null)
                 })
             })
@@ -278,11 +282,15 @@ impl ImportSession for OracleImportSession {
 impl OracleImportSession {
     fn apply_batch_bind_types(&self, batch: &mut Batch<'_>, rows: &[Vec<DbValue>]) -> Result<()> {
         for (index, column) in self.columns.iter().enumerate() {
-            let bind_type = self.column_types.get(column).and_then(|ty| ty.clone()).or_else(|| {
-                rows.iter()
-                    .filter_map(|row| row.get(index))
-                    .find_map(oracle_type_from_value)
-            });
+            let bind_type = self
+                .column_types
+                .get(column)
+                .and_then(|ty| ty.clone())
+                .or_else(|| {
+                    rows.iter()
+                        .filter_map(|row| row.get(index))
+                        .find_map(oracle_type_from_value)
+                });
 
             if let Some(bind_type) = bind_type {
                 batch.set_type(index + 1, &bind_type)?;
@@ -304,10 +312,7 @@ impl OracleImportSession {
             .enumerate()
             .map(|(index, value)| {
                 let column_name = &self.columns[index];
-                let column_type = self
-                    .column_types
-                    .get(column_name)
-                    .and_then(|ty| ty.clone());
+                let column_type = self.column_types.get(column_name).and_then(|ty| ty.clone());
                 OracleBindValue::from_db_value(value, column_type)
             })
             .collect()
@@ -329,9 +334,14 @@ impl OracleBindValue {
             DbValue::Null => Self::Null(hinted_type.unwrap_or(OracleType::Varchar2(1))),
             DbValue::Boolean(value) => Self::Boolean(*value),
             DbValue::Integer(value) => Self::Integer(*value),
-            DbValue::UnsignedInteger(value) => Self::Integer(i64::try_from(*value).map_err(|_| {
-                anyhow!("unsigned integer value {} exceeds Oracle i64 bind range", value)
-            })?),
+            DbValue::UnsignedInteger(value) => {
+                Self::Integer(i64::try_from(*value).map_err(|_| {
+                    anyhow!(
+                        "unsigned integer value {} exceeds Oracle i64 bind range",
+                        value
+                    )
+                })?)
+            }
             DbValue::Float(value) => Self::Float(*value),
             DbValue::Decimal(value)
             | DbValue::Text(value)
@@ -433,7 +443,9 @@ fn parse_raw_type(value: &str) -> Option<OracleType> {
 }
 
 fn parse_timestamp_type(value: &str) -> Option<OracleType> {
-    parse_type_size(value).and_then(|size| u8::try_from(size).ok()).map(OracleType::Timestamp)
+    parse_type_size(value)
+        .and_then(|size| u8::try_from(size).ok())
+        .map(OracleType::Timestamp)
 }
 
 fn parse_number_type(value: &str) -> Option<OracleType> {
@@ -463,31 +475,49 @@ fn parse_type_size(value: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_single_row_insert_sql, oracle_type_from_hint, oracle_type_from_value,
-        OracleBindValue,
+        OracleBindValue, build_single_row_insert_sql, oracle_type_from_hint, oracle_type_from_value,
     };
     use crate::value::DbValue;
     use oracle::sql_type::OracleType;
 
     #[test]
     fn oracle_insert_sql_uses_single_row_placeholders() {
-        let sql = build_single_row_insert_sql("SCOTT.EMP", &["EMPNO".to_string(), "ENAME".to_string()]);
+        let sql =
+            build_single_row_insert_sql("SCOTT.EMP", &["EMPNO".to_string(), "ENAME".to_string()]);
 
         assert_eq!(sql, "INSERT INTO SCOTT.EMP (EMPNO,ENAME) VALUES (:1,:2)");
     }
 
     #[test]
     fn oracle_type_hint_parses_common_types() {
-        assert_eq!(oracle_type_from_hint("integer"), Some(OracleType::Number(0, 0)));
-        assert_eq!(oracle_type_from_hint("timestamp"), Some(OracleType::Timestamp(6)));
-        assert_eq!(oracle_type_from_hint("varchar2(128)"), Some(OracleType::Varchar2(128)));
-        assert_eq!(oracle_type_from_hint("number(18,2)"), Some(OracleType::Number(18, 2)));
+        assert_eq!(
+            oracle_type_from_hint("integer"),
+            Some(OracleType::Number(0, 0))
+        );
+        assert_eq!(
+            oracle_type_from_hint("timestamp"),
+            Some(OracleType::Timestamp(6))
+        );
+        assert_eq!(
+            oracle_type_from_hint("varchar2(128)"),
+            Some(OracleType::Varchar2(128))
+        );
+        assert_eq!(
+            oracle_type_from_hint("number(18,2)"),
+            Some(OracleType::Number(18, 2))
+        );
     }
 
     #[test]
     fn oracle_type_can_be_inferred_from_db_value() {
-        assert_eq!(oracle_type_from_value(&DbValue::Integer(1)), Some(OracleType::Number(0, 0)));
-        assert_eq!(oracle_type_from_value(&DbValue::DateTime("2026-04-02 12:00:00".to_string())), Some(OracleType::Timestamp(6)));
+        assert_eq!(
+            oracle_type_from_value(&DbValue::Integer(1)),
+            Some(OracleType::Number(0, 0))
+        );
+        assert_eq!(
+            oracle_type_from_value(&DbValue::DateTime("2026-04-02 12:00:00".to_string())),
+            Some(OracleType::Timestamp(6))
+        );
         assert_eq!(oracle_type_from_value(&DbValue::Null), None);
     }
 
@@ -498,7 +528,10 @@ mod tests {
 
         match bind_value {
             OracleBindValue::Null(OracleType::Date) => {}
-            other => panic!("unexpected bind value: {:?}", std::mem::discriminant(&other)),
+            other => panic!(
+                "unexpected bind value: {:?}",
+                std::mem::discriminant(&other)
+            ),
         }
     }
 }

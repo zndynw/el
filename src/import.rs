@@ -1,7 +1,7 @@
 use crate::config::{CompressionType, ErrorStrategy, ImportConfig, TransactionMode};
 use crate::db::Database;
 use crate::value::DbValue;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use csv::{Reader, StringRecord};
 use flate2::read::GzDecoder;
 use std::collections::{HashMap, HashSet};
@@ -23,14 +23,16 @@ impl Importer {
 
         if let Some(stats) = self.db.direct_import(&self.config)? {
             tracing::debug!(
-                "direct_import handled by database implementation for {}",
-                self.config.qualified_target_table()
+                table = %self.config.qualified_target_table(),
+                "direct_import_used"
             );
             tracing::info!(
-                "Import completed: {} rows inserted, {} rows failed, duration: {:?}",
-                stats.rows_inserted,
-                stats.rows_failed,
-                stats.duration
+                status = if stats.rows_failed > 0 { "partial" } else { "success" },
+                table = %self.config.qualified_target_table(),
+                rows_inserted = stats.rows_inserted,
+                rows_failed = stats.rows_failed,
+                duration_ms = stats.duration.as_millis() as u64,
+                "import_summary"
             );
             return Ok(());
         }
@@ -42,34 +44,36 @@ impl Importer {
         let reader = self.open_input_file()?;
         let mut csv_reader = self.create_csv_reader(reader)?;
 
-        let (source_columns, target_columns, column_indices) = self.resolve_columns(&mut csv_reader)?;
+        let (source_columns, target_columns, column_indices) =
+            self.resolve_columns(&mut csv_reader)?;
         let selected_source_columns = column_indices
             .iter()
             .map(|&idx| source_columns[idx].clone())
             .collect::<Vec<_>>();
 
-        tracing::debug!("Resolved source columns: {:?}", source_columns);
-        tracing::debug!("Resolved target columns: {:?}", target_columns);
-        tracing::debug!("Selected source columns: {:?}", selected_source_columns);
-        tracing::debug!("Selected column indices: {:?}", column_indices);
+        tracing::debug!(
+            source_columns = ?source_columns,
+            target_columns = ?target_columns,
+            selected_source_columns = ?selected_source_columns,
+            column_indices = ?column_indices,
+            "column_projection_resolved"
+        );
 
         if let Some(sql) = self.config.pre_sql.clone() {
-            tracing::debug!("Executing pre_sql before import session: {}", sql);
-            self.execute_sql(&sql)?;
+            tracing::debug!(phase = "pre_sql", sql = %sql, "sql_preview");
+            self.execute_sql("pre_sql", &sql)?;
         }
 
         let column_types = self.config.column_types.clone().unwrap_or_default();
         let qualified_table = self.config.qualified_target_table();
-        let mut session = self
-            .db
-            .prepare_import(
-                &qualified_table,
-                &source_columns,
-                &selected_source_columns,
-                &target_columns,
-                &column_types,
-                &self.config,
-            )?;
+        let mut session = self.db.prepare_import(
+            &qualified_table,
+            &source_columns,
+            &selected_source_columns,
+            &target_columns,
+            &column_types,
+            &self.config,
+        )?;
 
         let mut batch = Vec::new();
         let mut row_count = 0u64;
@@ -78,43 +82,56 @@ impl Importer {
 
         for result in csv_reader.records() {
             match result {
-                Ok(record) => {
-                    match self.parse_record(&record, &column_indices, &target_columns) {
-                        Ok(values) => {
-                            batch.push(values);
-                            if batch.len() >= self.config.batch_size {
-                                batch_count += 1;
+                Ok(record) => match self.parse_record(&record, &column_indices, &target_columns) {
+                    Ok(values) => {
+                        batch.push(values);
+                        if batch.len() >= self.config.batch_size {
+                            batch_count += 1;
+                            tracing::debug!(
+                                batch_no = batch_count,
+                                batch_size = batch.len(),
+                                "batch_flush_start"
+                            );
+                            session.insert_batch(&batch)?;
+                            if self.config.transaction_mode == TransactionMode::PerBatch {
                                 tracing::debug!(
-                                    "Flushing batch {} with {} rows",
-                                    batch_count,
-                                    batch.len()
+                                    batch_no = batch_count,
+                                    transaction_mode = ?self.config.transaction_mode,
+                                    "transaction_commit"
                                 );
-                                session.insert_batch(&batch)?;
-                                if self.config.transaction_mode == TransactionMode::PerBatch {
-                                    tracing::debug!("Committing batch {}", batch_count);
-                                    session.commit()?;
-                                }
-                                row_count += batch.len() as u64;
-                                self.report_progress(row_count);
-                                batch.clear();
+                                session.commit()?;
                             }
-                        }
-                        Err(e) => {
-                            error_count += 1;
-                            if self.config.on_error == ErrorStrategy::Abort {
-                                return Err(e);
-                            } else {
-                                tracing::warn!("Skip row {}: {}", row_count + batch.len() as u64 + 1, e);
-                            }
+                            row_count += batch.len() as u64;
+                            self.report_progress(row_count);
+                            batch.clear();
                         }
                     }
-                }
+                    Err(e) => {
+                        error_count += 1;
+                        if self.config.on_error == ErrorStrategy::Abort {
+                            return Err(e);
+                        } else {
+                            tracing::warn!(
+                                row_num = row_count + batch.len() as u64 + 1,
+                                rows_failed = error_count,
+                                on_error = ?self.config.on_error,
+                                reason = %e,
+                                "row_skipped"
+                            );
+                        }
+                    }
+                },
                 Err(e) => {
                     error_count += 1;
                     if self.config.on_error == ErrorStrategy::Abort {
                         return Err(e.into());
                     } else {
-                        tracing::warn!("Skip invalid row: {}", e);
+                        tracing::warn!(
+                            rows_failed = error_count,
+                            on_error = ?self.config.on_error,
+                            reason = %e,
+                            "record_skipped"
+                        );
                     }
                 }
             }
@@ -123,30 +140,39 @@ impl Importer {
         if !batch.is_empty() {
             batch_count += 1;
             tracing::debug!(
-                "Flushing final batch {} with {} rows",
-                batch_count,
-                batch.len()
+                batch_no = batch_count,
+                batch_size = batch.len(),
+                "batch_flush_start"
             );
             session.insert_batch(&batch)?;
             row_count += batch.len() as u64;
         }
 
         if self.config.transaction_mode == TransactionMode::All {
-            tracing::debug!("Committing final transaction in all mode");
+            tracing::debug!(
+                transaction_mode = ?self.config.transaction_mode,
+                "transaction_commit"
+            );
             session.commit()?;
         }
 
         let stats = session.finish()?;
 
         if let Some(sql) = self.config.post_sql.clone() {
-            tracing::debug!("Reconnecting for post_sql execution");
+            tracing::debug!(phase = "post_sql", "db_reconnect_start");
             self.db.connect()?;
-            tracing::debug!("Executing post_sql after import session: {}", sql);
-            self.execute_sql(&sql)?;
+            tracing::debug!(phase = "post_sql", sql = %sql, "sql_preview");
+            self.execute_sql("post_sql", &sql)?;
         }
 
-        tracing::info!("Import completed: {} rows inserted, {} rows failed, duration: {:?}",
-            row_count, error_count, stats.duration);
+        tracing::info!(
+            status = if error_count > 0 { "partial" } else { "success" },
+            table = %self.config.qualified_target_table(),
+            rows_inserted = row_count,
+            rows_failed = error_count,
+            duration_ms = stats.duration.as_millis() as u64,
+            "import_summary"
+        );
 
         Ok(())
     }
@@ -158,15 +184,14 @@ impl Importer {
         Ok(())
     }
 
-    fn execute_sql(&mut self, sql: &str) -> Result<()> {
+    fn execute_sql(&mut self, phase: &str, sql: &str) -> Result<()> {
         let affected = self.db.execute_sql(sql)?;
-        tracing::info!("Executed SQL (affected {} rows): {}", affected, sql);
+        tracing::info!(phase = phase, affected_rows = affected, sql = %sql, "sql_executed");
         Ok(())
     }
 
     fn open_input_file(&self) -> Result<Box<dyn Read>> {
-        let file = File::open(&self.config.input_file)
-            .context("Failed to open input file")?;
+        let file = File::open(&self.config.input_file).context("Failed to open input file")?;
 
         let reader: Box<dyn Read> = match self.config.compression {
             CompressionType::Gzip => Box::new(GzDecoder::new(file)),
@@ -191,15 +216,25 @@ impl Importer {
         Ok(reader)
     }
 
-    fn resolve_columns(&self, csv_reader: &mut Reader<BufReader<Box<dyn Read>>>) -> Result<(Vec<String>, Vec<String>, Vec<usize>)> {
+    fn resolve_columns(
+        &self,
+        csv_reader: &mut Reader<BufReader<Box<dyn Read>>>,
+    ) -> Result<(Vec<String>, Vec<String>, Vec<usize>)> {
         let csv_columns = if self.config.has_header {
-            csv_reader.headers()?.iter().map(|s| s.to_string()).collect()
+            csv_reader
+                .headers()?
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
         } else {
-            self.config.source_columns.clone()
+            self.config
+                .source_columns
+                .clone()
                 .context("source_columns must be specified when has_header is false")?
         };
 
-        let (final_target_columns, column_indices) = resolve_column_projection(&csv_columns, &self.config)?;
+        let (final_target_columns, column_indices) =
+            resolve_column_projection(&csv_columns, &self.config)?;
 
         if column_indices.is_empty() {
             return Err(anyhow!("No columns to import after filtering"));
@@ -208,12 +243,20 @@ impl Importer {
         Ok((csv_columns, final_target_columns, column_indices))
     }
 
-    fn parse_record(&self, record: &StringRecord, column_indices: &[usize], target_columns: &[String]) -> Result<Vec<DbValue>> {
+    fn parse_record(
+        &self,
+        record: &StringRecord,
+        column_indices: &[usize],
+        target_columns: &[String],
+    ) -> Result<Vec<DbValue>> {
         let mut values = Vec::new();
         for (i, &idx) in column_indices.iter().enumerate() {
             let s = record.get(idx).unwrap_or("");
 
-            let type_hint = self.config.column_types.as_ref()
+            let type_hint = self
+                .config
+                .column_types
+                .as_ref()
                 .and_then(|types| types.get(&target_columns[i]))
                 .map(|s| s.as_str());
 
@@ -224,12 +267,15 @@ impl Importer {
 
     fn report_progress(&self, row_count: u64) {
         if self.config.show_progress && row_count % self.config.progress_interval == 0 {
-            tracing::info!("Imported {} rows", row_count);
+            tracing::info!(rows_inserted = row_count, "import_progress");
         }
     }
 }
 
-fn resolve_column_projection(csv_columns: &[String], config: &ImportConfig) -> Result<(Vec<String>, Vec<usize>)> {
+fn resolve_column_projection(
+    csv_columns: &[String],
+    config: &ImportConfig,
+) -> Result<(Vec<String>, Vec<usize>)> {
     if !config.has_header {
         let configured_columns = config
             .source_columns
@@ -263,7 +309,10 @@ fn resolve_column_projection(csv_columns: &[String], config: &ImportConfig) -> R
                     })
                     .unwrap_or(target_col);
                 let idx = available.get(source_col).copied().ok_or_else(|| {
-                    anyhow!("target column '{}' is not mapped from source_columns", target_col)
+                    anyhow!(
+                        "target column '{}' is not mapped from source_columns",
+                        target_col
+                    )
                 })?;
                 column_indices.push(idx);
             }
@@ -325,7 +374,10 @@ fn resolve_column_projection(csv_columns: &[String], config: &ImportConfig) -> R
         let mut column_indices = Vec::with_capacity(target_columns.len());
         for target_col in target_columns {
             let idx = available.get(target_col).copied().ok_or_else(|| {
-                anyhow!("target column '{}' is not present in input headers after mapping/filtering", target_col)
+                anyhow!(
+                    "target column '{}' is not present in input headers after mapping/filtering",
+                    target_col
+                )
             })?;
             column_indices.push(idx);
         }
@@ -353,7 +405,9 @@ fn resolve_column_projection(csv_columns: &[String], config: &ImportConfig) -> R
 #[cfg(test)]
 mod tests {
     use super::resolve_column_projection;
-    use crate::config::{CompressionType, ErrorStrategy, ImportConfig, ImportFormat, TransactionMode};
+    use crate::config::{
+        CompressionType, ErrorStrategy, ImportConfig, ImportFormat, TransactionMode,
+    };
     use std::collections::HashMap;
 
     fn base_import_config() -> ImportConfig {
@@ -425,9 +479,10 @@ mod tests {
         let err = resolve_column_projection(&csv_columns, &config)
             .expect_err("mismatched column count should fail");
 
-        assert!(err
-            .to_string()
-            .contains("source_columns count (2) must match input column count (3)"));
+        assert!(
+            err.to_string()
+                .contains("source_columns count (2) must match input column count (3)")
+        );
     }
 
     #[test]

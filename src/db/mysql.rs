@@ -54,7 +54,7 @@ impl MySqlDatabase {
                 })) {
                     Ok(db_value) => db_value,
                     Err(_) => {
-                        tracing::warn!("Failed to convert column {} value", index);
+                        tracing::warn!(column_index = index, "column_value_convert_failed");
                         DbValue::Null
                     }
                 }
@@ -149,10 +149,15 @@ impl ImportSession for MysqlImportSession {
 
         let placeholders = format!("({})", vec!["?"; self.columns.len()].join(","));
         let values_clause = vec![placeholders.as_str(); rows.len()].join(",");
-        let sql = format!("INSERT INTO {} ({}) VALUES {}",
-            self.table, self.columns.join(","), values_clause);
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES {}",
+            self.table,
+            self.columns.join(","),
+            values_clause
+        );
 
-        let params: Vec<Value> = rows.iter()
+        let params: Vec<Value> = rows
+            .iter()
             .flat_map(|row| row.iter().map(db_value_to_mysql_value))
             .collect();
 
@@ -182,8 +187,12 @@ fn db_value_to_mysql_value(value: &DbValue) -> Value {
         DbValue::Integer(i) => Value::Int(*i),
         DbValue::UnsignedInteger(u) => Value::UInt(*u),
         DbValue::Float(f) => Value::Double(*f),
-        DbValue::Decimal(s) | DbValue::Text(s) | DbValue::Date(s)
-        | DbValue::DateTime(s) | DbValue::Time(s) | DbValue::Interval(s)
+        DbValue::Decimal(s)
+        | DbValue::Text(s)
+        | DbValue::Date(s)
+        | DbValue::DateTime(s)
+        | DbValue::Time(s)
+        | DbValue::Interval(s)
         | DbValue::Json(s) => Value::Bytes(s.as_bytes().to_vec()),
         DbValue::Binary(b) => Value::Bytes(b.clone()),
     }

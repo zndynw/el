@@ -1,6 +1,7 @@
 use crate::cli::{Cli, Commands, ExportArgs, ImportArgs, InitArgs};
 use crate::config::{
-    CompressionType, Config, DatabaseConfig, ExportConfig, ExportFormat, ImportConfig, LoggingConfig,
+    CompressionType, Config, DatabaseConfig, ExportConfig, ExportFormat, ImportConfig,
+    LoggingConfig,
 };
 use crate::db::Database;
 use crate::db::greenplum::GreenplumDatabase;
@@ -23,8 +24,12 @@ pub fn run(cli: Cli) -> Result<()> {
     let vars_override = parse_cli_vars(&cli.vars)?;
 
     match cli.command {
-        Commands::Export(args) => run_export(args, verbose_override, log_tag_override, vars_override),
-        Commands::Import(args) => run_import(args, verbose_override, log_tag_override, vars_override),
+        Commands::Export(args) => {
+            run_export(args, verbose_override, log_tag_override, vars_override)
+        }
+        Commands::Import(args) => {
+            run_import(args, verbose_override, log_tag_override, vars_override)
+        }
         Commands::Init(args) => run_init(args),
     }
 }
@@ -53,8 +58,8 @@ fn run_init(args: InitArgs) -> Result<()> {
             .to_string()
     };
 
-    let template = templates::get(&template_id)
-        .ok_or_else(|| anyhow!("unknown template: {}", template_id))?;
+    let template =
+        templates::get(&template_id).ok_or_else(|| anyhow!("unknown template: {}", template_id))?;
     let output = args
         .output
         .as_deref()
@@ -94,38 +99,35 @@ fn run_export(
     )?;
 
     if let Some(config_path) = &resolved.config_path {
-        info!("Loading configuration from: {}", config_path);
+        info!(path = %config_path, "config_loaded");
     }
 
-    tracing::debug!("Configuration Details:");
-    tracing::debug!("  Database type: {}", resolved.database.db_type);
     tracing::debug!(
-        "  Connection string: {}",
-        resolved.database.connection_string
+        db_type = %resolved.database.db_type,
+        connection_string = %resolved.database.connection_string,
+        username = %resolved.database.username,
+        fetch_size = resolved.database.fetch_size,
+        output = %resolved.export.output_file,
+        format = ?resolved.export.format,
+        delimiter = ?resolved.export.delimiter,
+        show_progress = resolved.export.show_progress,
+        include_header = resolved.export.include_header,
+        buffer_size = resolved.export.buffer_size,
+        compression = ?resolved.export.compression,
+        "export_config_resolved"
     );
-    tracing::debug!("  Username: {}", resolved.database.username);
-    tracing::debug!("  Fetch size: {}", resolved.database.fetch_size);
-    tracing::debug!("  Output file: {}", resolved.export.output_file);
-    tracing::debug!("  Format: {:?}", resolved.export.format);
-    tracing::debug!("  Delimiter: {:?}", resolved.export.delimiter);
-    tracing::debug!("  Show progress: {}", resolved.export.show_progress);
-    tracing::debug!("  Include header: {}", resolved.export.include_header);
-    tracing::debug!("  Buffer size: {} bytes", resolved.export.buffer_size);
-    tracing::debug!("  Compression: {:?}", resolved.export.compression);
-    tracing::debug!("Query SQL:");
-    tracing::debug!("{}", resolved.export.query);
+    tracing::debug!(phase = "export_query", sql = %resolved.export.query, "sql_preview");
 
-    info!("Connecting to {} database...", resolved.database.db_type);
+    info!(db_type = %resolved.database.db_type, "db_connect_start");
     let mut db = build_database(resolved.database)?;
     db.connect()?;
-    info!("Connected successfully!");
+    info!("db_connect_ok");
 
-    info!("Starting export...");
+    info!("export_start");
     let mut exporter = Exporter::new(resolved.export);
     let stats = exporter.export(db.as_mut())?;
 
     stats.print_summary();
-    info!("Export completed successfully!");
 
     Ok(())
 }
@@ -145,25 +147,19 @@ fn run_import(
     )?;
 
     if let Some(config_path) = &resolved.config_path {
-        info!("Loading configuration from: {}", config_path);
+        info!(path = %config_path, "config_loaded");
     }
 
-    tracing::debug!(
-        database = ?resolved.database,
-        import = ?resolved.import,
-        "Import configuration"
-    );
+    tracing::debug!(database = ?resolved.database, import = ?resolved.import, "import_config_resolved");
 
-    info!("Connecting to {} database...", resolved.database.db_type);
+    info!(db_type = %resolved.database.db_type, "db_connect_start");
     let mut db = build_database(resolved.database)?;
     db.connect()?;
-    info!("Connected successfully!");
+    info!("db_connect_ok");
 
-    info!("Starting import...");
+    info!("import_start");
     let mut importer = Importer::new(db, resolved.import);
     importer.import()?;
-
-    info!("Import completed successfully!");
 
     Ok(())
 }
@@ -186,7 +182,8 @@ fn resolve_import_config(
         let resolved_vars = merge_template_vars(cfg.vars, vars_override);
         let database = merge_database_config_import(cfg.database, &args);
         let import = merge_import_config(
-            cfg.import.unwrap_or_else(|| build_import_config_from_args(&args).unwrap()),
+            cfg.import
+                .unwrap_or_else(|| build_import_config_from_args(&args).unwrap()),
             &args,
         )?;
         let import = apply_import_templates(import, &resolved_vars)?;
@@ -226,7 +223,9 @@ fn merge_database_config_import(mut config: DatabaseConfig, args: &ImportArgs) -
     }
     if let Some(password) = &args.password {
         config.password = password.clone();
-    } else if (config.db_type == "postgresql" || config.db_type == "greenplum") && config.password.is_empty() {
+    } else if (config.db_type == "postgresql" || config.db_type == "greenplum")
+        && config.password.is_empty()
+    {
         if let Ok(pgpassword) = std::env::var("PGPASSWORD") {
             config.password = pgpassword;
         }
@@ -255,10 +254,20 @@ fn merge_import_config(mut config: ImportConfig, args: &ImportArgs) -> Result<Im
         config.input_file = input.clone();
     }
     if let Some(source_columns) = &args.source_columns {
-        config.source_columns = Some(source_columns.split(',').map(|s| s.trim().to_string()).collect());
+        config.source_columns = Some(
+            source_columns
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect(),
+        );
     }
     if let Some(target_columns) = &args.target_columns {
-        config.target_columns = Some(target_columns.split(',').map(|s| s.trim().to_string()).collect());
+        config.target_columns = Some(
+            target_columns
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect(),
+        );
     }
     if let Some(mapping) = &args.column_mapping {
         config.column_mapping = Some(parse_column_mapping(mapping)?);
@@ -368,27 +377,64 @@ fn build_import_config_from_args(args: &ImportArgs) -> Result<ImportConfig> {
         schema: args.schema.clone(),
         table: args.table.clone().context("--table is required")?,
         input_file: args.input.clone().context("--input is required")?,
-        source_columns: args.source_columns.as_ref().map(|s| s.split(',').map(|s| s.trim().to_string()).collect()),
-        target_columns: args.target_columns.as_ref().map(|s| s.split(',').map(|s| s.trim().to_string()).collect()),
-        column_mapping: args.column_mapping.as_ref().map(|s| parse_column_mapping(s)).transpose()?,
+        source_columns: args
+            .source_columns
+            .as_ref()
+            .map(|s| s.split(',').map(|s| s.trim().to_string()).collect()),
+        target_columns: args
+            .target_columns
+            .as_ref()
+            .map(|s| s.split(',').map(|s| s.trim().to_string()).collect()),
+        column_mapping: args
+            .column_mapping
+            .as_ref()
+            .map(|s| parse_column_mapping(s))
+            .transpose()?,
         column_expressions: None,
-        skip_columns: args.skip_columns.as_ref().map(|s| s.split(',').map(|s| s.trim().to_string()).collect()),
-        column_types: args.column_types.as_ref().map(|s| parse_column_types(s)).transpose()?,
-        format: args.format.as_ref().map(|s| s.parse().map_err(|e: String| anyhow!(e))).transpose()?.unwrap_or(ImportFormat::Csv),
+        skip_columns: args
+            .skip_columns
+            .as_ref()
+            .map(|s| s.split(',').map(|s| s.trim().to_string()).collect()),
+        column_types: args
+            .column_types
+            .as_ref()
+            .map(|s| parse_column_types(s))
+            .transpose()?,
+        format: args
+            .format
+            .as_ref()
+            .map(|s| s.parse().map_err(|e: String| anyhow!(e)))
+            .transpose()?
+            .unwrap_or(ImportFormat::Csv),
         delimiter: args.delimiter.clone().unwrap_or_else(|| ",".to_string()),
         escape: args.escape.clone(),
         has_header: args.header_override().unwrap_or(true),
         batch_size: args.batch_size.unwrap_or(1000),
         null_value: args.null_value.clone().unwrap_or_default(),
-        on_error: args.on_error.as_ref().map(|s| s.parse().map_err(|e: String| anyhow!(e))).transpose()?.unwrap_or(ErrorStrategy::Skip),
-        transaction_mode: args.transaction.as_ref().map(|s| s.parse().map_err(|e: String| anyhow!(e))).transpose()?.unwrap_or(TransactionMode::PerBatch),
+        on_error: args
+            .on_error
+            .as_ref()
+            .map(|s| s.parse().map_err(|e: String| anyhow!(e)))
+            .transpose()?
+            .unwrap_or(ErrorStrategy::Skip),
+        transaction_mode: args
+            .transaction
+            .as_ref()
+            .map(|s| s.parse().map_err(|e: String| anyhow!(e)))
+            .transpose()?
+            .unwrap_or(TransactionMode::PerBatch),
         show_progress: args.progress_override().unwrap_or(false),
         progress_interval: args.progress_interval.unwrap_or(1_000_000),
         truncate_table: args.truncate,
         pre_sql: args.pre_sql.clone(),
         post_sql: args.post_sql.clone(),
         error_log_table: args.error_log_table.clone(),
-        compression: args.compression.as_ref().map(|s| parse_compression_type(s)).transpose()?.unwrap_or(CompressionType::None),
+        compression: args
+            .compression
+            .as_ref()
+            .map(|s| parse_compression_type(s))
+            .transpose()?
+            .unwrap_or(CompressionType::None),
     };
 
     validate_import_target(&config)?;
@@ -452,7 +498,8 @@ fn resolve_export_config(
         let resolved_vars = merge_template_vars(cfg.vars, vars_override);
         let database = merge_database_config(cfg.database, &args);
         let export = merge_export_config(
-            cfg.export.unwrap_or_else(|| build_export_config_from_args(&args).unwrap()),
+            cfg.export
+                .unwrap_or_else(|| build_export_config_from_args(&args).unwrap()),
             &args,
         )?;
         let export = apply_export_templates(export, &resolved_vars)?;
@@ -491,7 +538,9 @@ fn merge_database_config(mut config: DatabaseConfig, args: &ExportArgs) -> Datab
     }
     if let Some(password) = &args.password {
         config.password = password.clone();
-    } else if (config.db_type == "postgresql" || config.db_type == "greenplum") && config.password.is_empty() {
+    } else if (config.db_type == "postgresql" || config.db_type == "greenplum")
+        && config.password.is_empty()
+    {
         if let Ok(pgpassword) = std::env::var("PGPASSWORD") {
             config.password = pgpassword;
         }
@@ -655,7 +704,10 @@ fn parse_cli_vars(raw_vars: &[String]) -> Result<HashMap<String, String>> {
             .ok_or_else(|| anyhow!("invalid --var format '{}', expected key=value", entry))?;
         let key = key.trim();
         if key.is_empty() {
-            return Err(anyhow!("invalid --var format '{}', variable name is empty", entry));
+            return Err(anyhow!(
+                "invalid --var format '{}', variable name is empty",
+                entry
+            ));
         }
         vars.insert(key.to_string(), value.to_string());
     }
@@ -723,9 +775,9 @@ fn render_template(
     while let Some(start) = rest.find('{') {
         output.push_str(&rest[..start]);
         let after_start = &rest[start + 1..];
-        let end = after_start.find('}').ok_or_else(|| {
-            anyhow!("unclosed template variable in '{}'", input)
-        })?;
+        let end = after_start
+            .find('}')
+            .ok_or_else(|| anyhow!("unclosed template variable in '{}'", input))?;
         let key = &after_start[..end];
         if key.is_empty() {
             return Err(anyhow!("empty template variable in '{}'", input));
@@ -753,7 +805,9 @@ mod tests {
         merge_export_config, parse_cli_vars, render_template, resolve_export_query,
     };
     use crate::cli::{Cli, ExportArgs, ImportArgs};
-    use crate::config::{CompressionType, DatabaseConfig, ExportConfig, ExportFormat, LoggingConfig};
+    use crate::config::{
+        CompressionType, DatabaseConfig, ExportConfig, ExportFormat, LoggingConfig,
+    };
     use std::collections::{HashMap, HashSet};
 
     fn empty_args() -> ExportArgs {
@@ -893,7 +947,8 @@ mod tests {
 
     #[test]
     fn cli_exposes_log_tag_override() {
-        let cli = <Cli as clap::Parser>::parse_from(["el", "--log-tag", "batch-01", "init", "--list"]);
+        let cli =
+            <Cli as clap::Parser>::parse_from(["el", "--log-tag", "batch-01", "init", "--list"]);
 
         assert_eq!(cli.log_tag.as_deref(), Some("batch-01"));
     }
@@ -929,8 +984,12 @@ mod tests {
 
     #[test]
     fn render_template_errors_when_variable_is_missing() {
-        let err = render_template("risk/{date}/{datasource}.dat", &HashMap::new(), &HashSet::new())
-            .expect_err("missing variable should fail");
+        let err = render_template(
+            "risk/{date}/{datasource}.dat",
+            &HashMap::new(),
+            &HashSet::new(),
+        )
+        .expect_err("missing variable should fail");
 
         assert!(err.to_string().contains("missing template variable: date"));
     }
@@ -956,7 +1015,8 @@ mod tests {
             ("batch_date".to_string(), "20260329".to_string()),
         ]);
 
-        let rendered = apply_export_templates(config, &vars).expect("export templates should render");
+        let rendered =
+            apply_export_templates(config, &vars).expect("export templates should render");
 
         assert_eq!(
             rendered.query,
@@ -988,11 +1048,9 @@ mod tests {
             ("batch_date".to_string(), "20260329".to_string()),
         ]);
 
-        let rendered = resolve_export_query(
-            &temp_dir.join("{table_name}.sql").to_string_lossy(),
-            &vars,
-        )
-        .expect("query should resolve");
+        let rendered =
+            resolve_export_query(&temp_dir.join("{table_name}.sql").to_string_lossy(), &vars)
+                .expect("query should resolve");
 
         assert_eq!(
             rendered,
@@ -1042,7 +1100,8 @@ mod tests {
             gpfdist_dir: None,
         };
 
-        let err = build_import_config_from_args(&args).expect_err("schema-qualified table should fail");
+        let err =
+            build_import_config_from_args(&args).expect_err("schema-qualified table should fail");
 
         assert!(err.to_string().contains("table must not contain schema"));
     }

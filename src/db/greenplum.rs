@@ -25,7 +25,8 @@ impl GreenplumDatabase {
 
     fn build_connection_string(&self) -> Result<String> {
         if self.config.connection_string.starts_with("postgresql://")
-            || self.config.connection_string.starts_with("postgres://") {
+            || self.config.connection_string.starts_with("postgres://")
+        {
             Ok(self.config.connection_string.clone())
         } else {
             let target = parse_connection_target(&self.config.connection_string)?;
@@ -84,14 +85,16 @@ fn parse_connection_target(value: &str) -> Result<GreenplumConnectionTarget> {
 impl Database for GreenplumDatabase {
     fn connect(&mut self) -> Result<()> {
         let conn_str = self.build_connection_string()?;
-        let client = Client::connect(&conn_str, NoTls)
-            .context("Failed to connect to Greenplum database")?;
+        let client =
+            Client::connect(&conn_str, NoTls).context("Failed to connect to Greenplum database")?;
         self.connection = Some(client);
         Ok(())
     }
 
     fn stream_query(&mut self, _query: &str, _sink: &mut dyn QuerySink) -> Result<()> {
-        Err(anyhow!("Greenplum stream_query not implemented, use PostgreSQL driver"))
+        Err(anyhow!(
+            "Greenplum stream_query not implemented, use PostgreSQL driver"
+        ))
     }
 
     fn execute_sql(&mut self, sql: &str) -> Result<u64> {
@@ -153,13 +156,16 @@ impl Database for GreenplumDatabase {
 
         let result = (|| -> Result<ImportStats> {
             if config.truncate_table {
-                conn.execute(&format!("TRUNCATE TABLE {}", config.qualified_target_table()), &[])?;
+                conn.execute(
+                    &format!("TRUNCATE TABLE {}", config.qualified_target_table()),
+                    &[],
+                )?;
             }
 
             if let Some(sql) = &config.pre_sql {
                 let sql = sql.replace("{ext_table}", &temp_table);
                 let affected = conn.execute(&sql, &[])?;
-                tracing::info!("pre_sql affected {} rows", affected);
+                tracing::info!(phase = "pre_sql", affected_rows = affected, "sql_executed");
             }
 
             let insert_sql = format!(
@@ -174,15 +180,15 @@ impl Database for GreenplumDatabase {
             if let Some(sql) = &config.post_sql {
                 let sql = sql.replace("{ext_table}", &temp_table);
                 let affected = conn.execute(&sql, &[])?;
-                tracing::info!("post_sql affected {} rows", affected);
+                tracing::info!(phase = "post_sql", affected_rows = affected, "sql_executed");
             }
 
             let rows_failed = if let Some(err_table) = &config.error_log_table {
                 let affected = save_greenplum_errors(conn, err_table, &temp_table)?;
                 tracing::info!(
-                    "error_log_table captured {} failed rows into {}",
-                    affected,
-                    err_table
+                    error_log_table = %err_table,
+                    rows_failed = affected,
+                    "error_log_captured"
                 );
                 affected
             } else {
@@ -213,17 +219,28 @@ impl Database for GreenplumDatabase {
     ) -> Result<Box<dyn ImportSession>> {
         let conn = self.connection.take().context("Database not connected")?;
 
-        let gpfdist_host = self.config.gpfdist_host.as_ref()
+        let gpfdist_host = self
+            .config
+            .gpfdist_host
+            .as_ref()
             .ok_or_else(|| anyhow!("gpfdist_host not configured"))?;
-        let gpfdist_port = self.config.gpfdist_port
+        let gpfdist_port = self
+            .config
+            .gpfdist_port
             .ok_or_else(|| anyhow!("gpfdist_port not configured"))?;
-        let gpfdist_dir = self.config.gpfdist_dir.as_ref()
+        let gpfdist_dir = self
+            .config
+            .gpfdist_dir
+            .as_ref()
             .ok_or_else(|| anyhow!("gpfdist_dir not configured"))?;
 
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
         let temp_filename = format!("import_{}.csv", timestamp);
         let temp_file_path = PathBuf::from(gpfdist_dir).join(&temp_filename);
-        let gpfdist_url = format!("gpfdist://{}:{}/{}", gpfdist_host, gpfdist_port, temp_filename);
+        let gpfdist_url = format!(
+            "gpfdist://{}:{}/{}",
+            gpfdist_host, gpfdist_port, temp_filename
+        );
 
         let temp_table = format!("temp_ext_{}", timestamp);
 
@@ -280,12 +297,19 @@ impl ImportSession for GreenplumExternalSession {
                 .context("Failed to create temp file for gpfdist")?;
             self.data_file = Some(file);
 
-            let column_defs = self.external_columns.iter().map(|col| {
-                let col_type = self.column_types.get(col)
-                    .map(String::as_str)
-                    .unwrap_or("TEXT");
-                format!("{} {}", col, col_type)
-            }).collect::<Vec<_>>().join(", ");
+            let column_defs = self
+                .external_columns
+                .iter()
+                .map(|col| {
+                    let col_type = self
+                        .column_types
+                        .get(col)
+                        .map(String::as_str)
+                        .unwrap_or("TEXT");
+                    format!("{} {}", col, col_type)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
 
             let create_sql = format!(
                 "CREATE EXTERNAL TABLE {} ({}) LOCATION ('{}') {} LOG ERRORS SEGMENT REJECT LIMIT 1000 ROWS",
@@ -333,9 +357,9 @@ impl ImportSession for GreenplumExternalSession {
                 self.rows_failed =
                     save_greenplum_errors(&mut self.conn, err_table, &self.temp_table)?;
                 tracing::info!(
-                    "error_log_table captured {} failed rows into {}",
-                    self.rows_failed,
-                    err_table
+                    error_log_table = %err_table,
+                    rows_failed = self.rows_failed,
+                    "error_log_captured"
                 );
             } else {
                 self.rows_failed = count_greenplum_errors(&mut self.conn, &self.temp_table)?;
@@ -357,7 +381,9 @@ impl ImportSession for GreenplumExternalSession {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{CompressionType, ErrorStrategy, ImportConfig, ImportFormat, TransactionMode};
+    use crate::config::{
+        CompressionType, ErrorStrategy, ImportConfig, ImportFormat, TransactionMode,
+    };
     use std::collections::HashMap;
     use std::time::Instant;
 
@@ -414,8 +440,8 @@ mod tests {
     #[test]
     fn csv_format_uses_csv_external_table_clause_without_header() {
         let _unused = (HashMap::<String, String>::new(), Instant::now());
-        let clause = super::external_format_clause(&ImportFormat::Csv, "|")
-            .expect("clause should build");
+        let clause =
+            super::external_format_clause(&ImportFormat::Csv, "|").expect("clause should build");
 
         assert_eq!(clause, "FORMAT 'CSV' (DELIMITER ',' NULL '')");
         assert!(!clause.contains("HEADER"));
@@ -468,8 +494,8 @@ mod tests {
         let mut config = base_import_config();
         config.escape = Some("\\".to_string());
 
-        let clause = super::external_format_clause_for_source(&config)
-            .expect("clause should build");
+        let clause =
+            super::external_format_clause_for_source(&config).expect("clause should build");
 
         assert!(clause.contains("ESCAPE E'\\\\'"));
     }
@@ -534,7 +560,9 @@ fn external_format_clause_for_source(config: &ImportConfig) -> Result<String> {
         }
         ImportFormat::Tsv => {
             if config.has_header {
-                return Err(anyhow!("Greenplum direct import does not support has_header=true with tsv format"));
+                return Err(anyhow!(
+                    "Greenplum direct import does not support has_header=true with tsv format"
+                ));
             }
             Ok(format!(
                 "FORMAT 'TEXT' (DELIMITER E'\\t' NULL ''{})",
@@ -543,11 +571,16 @@ fn external_format_clause_for_source(config: &ImportConfig) -> Result<String> {
         }
         ImportFormat::Custom => {
             if config.has_header {
-                return Err(anyhow!("Greenplum direct import does not support has_header=true with custom format"));
+                return Err(anyhow!(
+                    "Greenplum direct import does not support has_header=true with custom format"
+                ));
             }
             Ok(format!(
                 "FORMAT 'TEXT' (DELIMITER {} NULL ''{})",
-                greenplum_text_delimiter_literal(&effective_delimiter(&config.format, &config.delimiter)?),
+                greenplum_text_delimiter_literal(&effective_delimiter(
+                    &config.format,
+                    &config.delimiter
+                )?),
                 escape_clause
             ))
         }
@@ -558,7 +591,11 @@ fn build_projection(config: &ImportConfig, source_columns: &[String]) -> Result<
     let skip_set = config
         .skip_columns
         .as_ref()
-        .map(|cols| cols.iter().map(String::as_str).collect::<std::collections::HashSet<_>>())
+        .map(|cols| {
+            cols.iter()
+                .map(String::as_str)
+                .collect::<std::collections::HashSet<_>>()
+        })
         .unwrap_or_default();
 
     let mut available_targets = std::collections::HashMap::new();
@@ -572,7 +609,10 @@ fn build_projection(config: &ImportConfig, source_columns: &[String]) -> Result<
             .and_then(|mapping| mapping.get(source_col))
             .unwrap_or(source_col)
             .clone();
-        if available_targets.insert(target_col.clone(), source_col.clone()).is_some() {
+        if available_targets
+            .insert(target_col.clone(), source_col.clone())
+            .is_some()
+        {
             return Err(anyhow!(
                 "multiple source columns map to the same target column: {}",
                 target_col
@@ -681,7 +721,10 @@ fn write_row(
     format: &ImportFormat,
     delimiter: &str,
 ) -> Result<()> {
-    let values = row.iter().map(|value| formatter.format(value)).collect::<Vec<_>>();
+    let values = row
+        .iter()
+        .map(|value| formatter.format(value))
+        .collect::<Vec<_>>();
 
     match format {
         ImportFormat::Csv | ImportFormat::Tsv => {
