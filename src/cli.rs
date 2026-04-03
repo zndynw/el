@@ -3,6 +3,7 @@ use clap::{ArgAction, Args, Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "el")]
 #[command(about = "Data Export/Import Tool")]
+#[command(version)]
 pub struct Cli {
     /// Enable verbose logging
     #[arg(short, long, global = true, conflicts_with = "quiet")]
