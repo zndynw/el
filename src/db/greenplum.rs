@@ -156,10 +156,9 @@ impl Database for GreenplumDatabase {
 
         let result = (|| -> Result<ImportStats> {
             if config.truncate_table {
-                conn.execute(
-                    &format!("TRUNCATE TABLE {}", config.qualified_target_table()),
-                    &[],
-                )?;
+                let table = config.qualified_target_table();
+                conn.execute(&format!("TRUNCATE TABLE {}", table), &[])?;
+                tracing::info!(table = %table, "table_truncated");
             }
 
             if let Some(sql) = &config.pre_sql {
