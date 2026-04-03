@@ -45,7 +45,13 @@ impl Visit for EventFieldVisitor {
     }
 }
 
-const SKIP_FIELDS: &[&str] = &["log.file", "log.line", "log.module_path", "code.filepath", "code.lineno"];
+const SKIP_FIELDS: &[&str] = &[
+    "log.file",
+    "log.line",
+    "log.module_path",
+    "code.filepath",
+    "code.lineno",
+];
 
 fn should_skip_field(name: &str) -> bool {
     SKIP_FIELDS.contains(&name)
@@ -88,7 +94,11 @@ where
             write!(writer, " {}", visitor.fields.join(" "))?;
         }
 
-        for span in ctx.event_scope().into_iter().flat_map(|scope| scope.from_root()) {
+        for span in ctx
+            .event_scope()
+            .into_iter()
+            .flat_map(|scope| scope.from_root())
+        {
             let ext = span.extensions();
             if let Some(fields) = ext.get::<FormattedFields<N>>() {
                 if !fields.is_empty() {
@@ -134,12 +144,9 @@ pub fn init_tracing(log_file: Option<&str>, tag: Option<&str>, verbose: bool) ->
     } else {
         tracing_subscriber::registry()
             .with(env_filter)
-            .with(
-                fmt_layer()
-                    .event_format(LogFormatter {
-                        tag: tag.map(ToOwned::to_owned),
-                    }),
-            )
+            .with(fmt_layer().event_format(LogFormatter {
+                tag: tag.map(ToOwned::to_owned),
+            }))
             .init();
     }
 

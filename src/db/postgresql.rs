@@ -22,7 +22,8 @@ impl PostgreSqlDatabase {
 
     fn build_connection_string(&self) -> Result<String> {
         if self.config.connection_string.starts_with("postgresql://")
-            || self.config.connection_string.starts_with("postgres://") {
+            || self.config.connection_string.starts_with("postgres://")
+        {
             Ok(self.config.connection_string.clone())
         } else {
             let target = parse_connection_target(&self.config.connection_string)?;
@@ -51,7 +52,9 @@ fn parse_connection_target(value: &str) -> Result<PostgreSqlConnectionTarget> {
 
     let database = database.trim();
     if database.is_empty() {
-        return Err(anyhow!("PostgreSQL connection string must include database"));
+        return Err(anyhow!(
+            "PostgreSQL connection string must include database"
+        ));
     }
 
     let (host, port) = if let Some((h, p)) = host_port.rsplit_once(':') {
@@ -90,7 +93,10 @@ impl Database for PostgreSqlDatabase {
     fn stream_query(&mut self, query: &str, sink: &mut dyn QuerySink) -> Result<()> {
         let conn = self.connection.as_mut().context("Database not connected")?;
 
-        let copy_query = format!("COPY ({}) TO STDOUT WITH (FORMAT CSV, NULL '', HEADER false)", query);
+        let copy_query = format!(
+            "COPY ({}) TO STDOUT WITH (FORMAT CSV, NULL '', HEADER false)",
+            query
+        );
         let mut reader = conn.copy_out(&copy_query)?;
 
         let mut first_line = true;
@@ -114,7 +120,13 @@ impl Database for PostgreSqlDatabase {
                     } else {
                         let values = parse_csv_line(&line_buffer)?
                             .into_iter()
-                            .map(|s| if s.is_empty() { DbValue::Null } else { DbValue::Text(s) })
+                            .map(|s| {
+                                if s.is_empty() {
+                                    DbValue::Null
+                                } else {
+                                    DbValue::Text(s)
+                                }
+                            })
                             .collect::<Vec<_>>();
                         sink.on_row(&values)?;
                     }
@@ -133,7 +145,12 @@ impl Database for PostgreSqlDatabase {
         Ok(conn.execute(sql, &[])?)
     }
 
-    fn direct_export(&mut self, query: &str, writer: &mut dyn Write, format: &ExportConfig) -> Result<(u64, u64)> {
+    fn direct_export(
+        &mut self,
+        query: &str,
+        writer: &mut dyn Write,
+        format: &ExportConfig,
+    ) -> Result<(u64, u64)> {
         let conn = self.connection.as_mut().context("Database not connected")?;
 
         // Count rows if requested
@@ -147,7 +164,9 @@ impl Database for PostgreSqlDatabase {
         let delimiter = if format.delimiter.len() == 1 {
             format.delimiter.chars().next().unwrap()
         } else {
-            return Err(anyhow!("PostgreSQL COPY only supports single-byte delimiters"));
+            return Err(anyhow!(
+                "PostgreSQL COPY only supports single-byte delimiters"
+            ));
         };
 
         let copy_query = match format.format {
@@ -222,7 +241,10 @@ impl ImportSession for PostgresCopySession {
         let formatter = ValueFormatter::default();
 
         let cols = self.columns.join(", ");
-        let copy_sql = format!("COPY {} ({}) FROM STDIN WITH (FORMAT CSV)", self.table, cols);
+        let copy_sql = format!(
+            "COPY {} ({}) FROM STDIN WITH (FORMAT CSV)",
+            self.table, cols
+        );
         let mut writer = self.conn.copy_in(&copy_sql)?;
 
         for row in rows {

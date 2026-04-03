@@ -77,26 +77,16 @@ impl DbValue {
 
         if let Some(type_name) = type_hint {
             return match type_name.to_lowercase().as_str() {
-                "integer" | "int" | "bigint" | "smallint" => {
-                    Ok(DbValue::Integer(s.parse()?))
-                }
-                "float" | "double" | "real" => {
-                    Ok(DbValue::Float(s.parse()?))
-                }
-                "decimal" | "numeric" => {
-                    Ok(DbValue::Decimal(s.to_string()))
-                }
+                "integer" | "int" | "bigint" | "smallint" => Ok(DbValue::Integer(s.parse()?)),
+                "float" | "double" | "real" => Ok(DbValue::Float(s.parse()?)),
+                "decimal" | "numeric" => Ok(DbValue::Decimal(s.to_string())),
                 "boolean" | "bool" => {
                     let b = matches!(s.to_lowercase().as_str(), "true" | "t" | "1" | "yes" | "y");
                     Ok(DbValue::Boolean(b))
                 }
-                "date" => {
-                    Ok(DbValue::Date(s.to_string()))
-                }
-                "datetime" | "timestamp" => {
-                    Ok(DbValue::DateTime(s.to_string()))
-                }
-                _ => Ok(DbValue::Text(s.to_string()))
+                "date" => Ok(DbValue::Date(s.to_string())),
+                "datetime" | "timestamp" => Ok(DbValue::DateTime(s.to_string())),
+                _ => Ok(DbValue::Text(s.to_string())),
             };
         }
 

@@ -17,11 +17,19 @@ pub trait Database {
         Err(anyhow::anyhow!("execute_sql not supported"))
     }
 
-    fn direct_import(&mut self, _config: &crate::config::ImportConfig) -> Result<Option<ImportStats>> {
+    fn direct_import(
+        &mut self,
+        _config: &crate::config::ImportConfig,
+    ) -> Result<Option<ImportStats>> {
         Ok(None)
     }
 
-    fn direct_export(&mut self, _query: &str, _writer: &mut dyn Write, _format: &crate::config::ExportConfig) -> Result<(u64, u64)> {
+    fn direct_export(
+        &mut self,
+        _query: &str,
+        _writer: &mut dyn Write,
+        _format: &crate::config::ExportConfig,
+    ) -> Result<(u64, u64)> {
         Err(anyhow::anyhow!("direct export not supported"))
     }
 

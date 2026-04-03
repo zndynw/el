@@ -268,15 +268,51 @@ created_at = "timestamp"
 "#;
 
 static TEMPLATES: &[TemplateDef] = &[
-    TemplateDef { id: "postgresql-import", description: "PostgreSQL import", content: POSTGRESQL_IMPORT },
-    TemplateDef { id: "postgresql-export", description: "PostgreSQL export", content: POSTGRESQL_EXPORT },
-    TemplateDef { id: "mysql-import", description: "MySQL import", content: MYSQL_IMPORT },
-    TemplateDef { id: "mysql-export", description: "MySQL export", content: MYSQL_EXPORT },
-    TemplateDef { id: "oracle-import", description: "Oracle import", content: ORACLE_IMPORT },
-    TemplateDef { id: "oracle-export", description: "Oracle export", content: ORACLE_EXPORT },
-    TemplateDef { id: "greenplum-import", description: "Greenplum direct gpfdist import", content: GREENPLUM_IMPORT },
-    TemplateDef { id: "greenplum-incremental", description: "Greenplum incremental import", content: GREENPLUM_INCREMENTAL },
-    TemplateDef { id: "advanced-import", description: "Advanced import with mapping", content: ADVANCED_IMPORT },
+    TemplateDef {
+        id: "postgresql-import",
+        description: "PostgreSQL import",
+        content: POSTGRESQL_IMPORT,
+    },
+    TemplateDef {
+        id: "postgresql-export",
+        description: "PostgreSQL export",
+        content: POSTGRESQL_EXPORT,
+    },
+    TemplateDef {
+        id: "mysql-import",
+        description: "MySQL import",
+        content: MYSQL_IMPORT,
+    },
+    TemplateDef {
+        id: "mysql-export",
+        description: "MySQL export",
+        content: MYSQL_EXPORT,
+    },
+    TemplateDef {
+        id: "oracle-import",
+        description: "Oracle import",
+        content: ORACLE_IMPORT,
+    },
+    TemplateDef {
+        id: "oracle-export",
+        description: "Oracle export",
+        content: ORACLE_EXPORT,
+    },
+    TemplateDef {
+        id: "greenplum-import",
+        description: "Greenplum direct gpfdist import",
+        content: GREENPLUM_IMPORT,
+    },
+    TemplateDef {
+        id: "greenplum-incremental",
+        description: "Greenplum incremental import",
+        content: GREENPLUM_INCREMENTAL,
+    },
+    TemplateDef {
+        id: "advanced-import",
+        description: "Advanced import with mapping",
+        content: ADVANCED_IMPORT,
+    },
 ];
 
 pub fn all() -> &'static [TemplateDef] {
@@ -306,8 +342,14 @@ mod tests {
 
     #[test]
     fn resolves_template_shortcuts() {
-        assert_eq!(resolve_shortcut("greenplum", "import"), Some("greenplum-import"));
-        assert_eq!(resolve_shortcut("postgresql", "export"), Some("postgresql-export"));
+        assert_eq!(
+            resolve_shortcut("greenplum", "import"),
+            Some("greenplum-import")
+        );
+        assert_eq!(
+            resolve_shortcut("postgresql", "export"),
+            Some("postgresql-export")
+        );
     }
 
     #[test]
