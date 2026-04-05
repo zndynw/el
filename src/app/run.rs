@@ -161,8 +161,16 @@ pub(crate) fn build_import_dry_run_plan(resolved: &ResolvedImportConfig) -> Stri
     let target_columns = format_optional_list(resolved.import.target_columns.as_ref());
     let pre_sql = resolved.import.pre_sql.as_deref().unwrap_or("<none>");
     let post_sql = resolved.import.post_sql.as_deref().unwrap_or("<none>");
-    let error_log_table = resolved.import.error_log_table.as_deref().unwrap_or("<none>");
-    let gpfdist_host = resolved.database.gpfdist_host.as_deref().unwrap_or("<none>");
+    let error_log_table = resolved
+        .import
+        .error_log_table
+        .as_deref()
+        .unwrap_or("<none>");
+    let gpfdist_host = resolved
+        .database
+        .gpfdist_host
+        .as_deref()
+        .unwrap_or("<none>");
     let gpfdist_port = resolved
         .database
         .gpfdist_port

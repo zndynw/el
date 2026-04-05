@@ -47,9 +47,8 @@ mod tests {
     use super::{
         apply_export_templates, build_database_config_from_args,
         build_database_config_from_args_import, build_import_config_from_args,
-        merge_database_config,
-        merge_export_config, parse_cli_vars, render_template, resolve_export_config,
-        resolve_export_query, resolve_import_config,
+        merge_database_config, merge_export_config, parse_cli_vars, render_template,
+        resolve_export_config, resolve_export_query, resolve_import_config,
     };
     use crate::cli::{Cli, ExportArgs, ImportArgs};
     use crate::config::{
@@ -176,7 +175,8 @@ mod tests {
         resolved.import.show_progress = true;
         resolved.import.progress_interval_secs = 15;
         resolved.import.truncate_table = true;
-        resolved.import.pre_sql = Some("delete from public.orders where dt = '20260405'".to_string());
+        resolved.import.pre_sql =
+            Some("delete from public.orders where dt = '20260405'".to_string());
         resolved.import.post_sql = Some("analyze public.orders".to_string());
         resolved.import.error_log_table = Some("etl_errors".to_string());
         resolved
@@ -348,7 +348,8 @@ mod tests {
 
     #[test]
     fn import_dry_run_plan_includes_resolved_execution_details() {
-        let plan = super::build_import_dry_run_plan(&sample_resolved_import_config_with_greenplum());
+        let plan =
+            super::build_import_dry_run_plan(&sample_resolved_import_config_with_greenplum());
 
         assert!(plan.contains("mode: import"));
         assert!(plan.contains("dry_run: true"));
@@ -378,7 +379,8 @@ mod tests {
         args.username = Some("app".to_string());
         args.dry_run = true;
 
-        let config = build_database_config_from_args(&args).expect("dry-run should not require password");
+        let config =
+            build_database_config_from_args(&args).expect("dry-run should not require password");
 
         assert_eq!(config.db_type, "postgresql");
         assert_eq!(config.password, "");
@@ -521,9 +523,8 @@ mod tests {
 
     #[test]
     fn export_resolved_config_includes_sections_and_redacts_password() {
-        let output = super::build_export_resolved_config_text(
-            &sample_resolved_export_config_with_logging(),
-        );
+        let output =
+            super::build_export_resolved_config_text(&sample_resolved_export_config_with_logging());
 
         assert!(output.contains("mode = \"export\""));
         assert!(output.contains("config_path = \"export.toml\""));
@@ -643,9 +644,10 @@ mod tests {
         let err = super::validate_resolved_import_config(&resolved)
             .expect_err("source_columns should be required without header");
 
-        assert!(err
-            .to_string()
-            .contains("source_columns must be specified when has_header is false"));
+        assert!(
+            err.to_string()
+                .contains("source_columns must be specified when has_header is false")
+        );
     }
 
     #[test]
@@ -685,9 +687,10 @@ mod tests {
         let err = super::validate_resolved_import_config(&resolved)
             .expect_err("custom import with empty delimiter should fail");
 
-        assert!(err
-            .to_string()
-            .contains("custom import format requires a delimiter"));
+        assert!(
+            err.to_string()
+                .contains("custom import format requires a delimiter")
+        );
     }
 
     #[test]
@@ -903,7 +906,10 @@ progress_interval_secs = 30
         )
         .expect("export config should resolve");
 
-        assert_eq!(resolved.config_path.as_deref(), Some(config_path.to_string_lossy().as_ref()));
+        assert_eq!(
+            resolved.config_path.as_deref(),
+            Some(config_path.to_string_lossy().as_ref())
+        );
         assert_eq!(resolved.database.connection_string, "cli-host:5432/app");
         assert_eq!(resolved.database.username, "cli-user");
         assert_eq!(resolved.database.fetch_size, 5000);
@@ -911,14 +917,20 @@ progress_interval_secs = 30
             resolved.export.query,
             "select * from public.orders where dt = '20260405'"
         );
-        assert_eq!(resolved.export.output_file, "cli-out/orders_20260405.csv.gz");
+        assert_eq!(
+            resolved.export.output_file,
+            "cli-out/orders_20260405.csv.gz"
+        );
         assert_eq!(resolved.export.format, ExportFormat::Custom);
         assert_eq!(resolved.export.delimiter, "|");
         assert!(resolved.export.include_header);
         assert_eq!(resolved.export.compression, CompressionType::Gzip);
         assert_eq!(resolved.export.progress_interval_secs, 10);
         assert!(resolved.export.count_rows);
-        assert_eq!(resolved.logging.log_file.as_deref(), Some("logs/cli-export.log"));
+        assert_eq!(
+            resolved.logging.log_file.as_deref(),
+            Some("logs/cli-export.log")
+        );
         assert_eq!(resolved.logging.tag.as_deref(), Some("cli-tag"));
         assert!(!resolved.logging.verbose);
 
@@ -1016,10 +1028,16 @@ progress_interval_secs = 30
         )
         .expect("import config should resolve");
 
-        assert_eq!(resolved.config_path.as_deref(), Some(config_path.to_string_lossy().as_ref()));
+        assert_eq!(
+            resolved.config_path.as_deref(),
+            Some(config_path.to_string_lossy().as_ref())
+        );
         assert_eq!(resolved.database.connection_string, "cli-host:5432/app");
         assert_eq!(resolved.database.username, "cli-user");
-        assert_eq!(resolved.database.gpfdist_host.as_deref(), Some("etl-override"));
+        assert_eq!(
+            resolved.database.gpfdist_host.as_deref(),
+            Some("etl-override")
+        );
         assert_eq!(resolved.database.gpfdist_port, Some(9100));
         assert_eq!(resolved.import.schema.as_deref(), Some("ods"));
         assert_eq!(
@@ -1032,15 +1050,24 @@ progress_interval_secs = 30
         assert!(resolved.import.show_progress);
         assert_eq!(resolved.import.progress_interval_secs, 15);
         assert_eq!(resolved.import.batch_size, 2000);
-        assert_eq!(resolved.import.on_error, crate::config::ErrorStrategy::Abort);
+        assert_eq!(
+            resolved.import.on_error,
+            crate::config::ErrorStrategy::Abort
+        );
         assert_eq!(
             resolved.import.transaction_mode,
             crate::config::TransactionMode::All
         );
         assert!(resolved.import.truncate_table);
         assert_eq!(resolved.import.compression, CompressionType::Gzip);
-        assert_eq!(resolved.import.error_log_table.as_deref(), Some("etl_errors"));
-        assert_eq!(resolved.logging.log_file.as_deref(), Some("logs/cli-import.log"));
+        assert_eq!(
+            resolved.import.error_log_table.as_deref(),
+            Some("etl_errors")
+        );
+        assert_eq!(
+            resolved.logging.log_file.as_deref(),
+            Some("logs/cli-import.log")
+        );
         assert_eq!(resolved.logging.tag.as_deref(), Some("cli-import"));
         assert!(!resolved.logging.verbose);
 
@@ -1086,7 +1113,10 @@ format = "csv"
         .err()
         .expect("missing template variable should fail");
 
-        assert!(err.to_string().contains("missing template variable: batch_date"));
+        assert!(
+            err.to_string()
+                .contains("missing template variable: batch_date")
+        );
 
         let _ = std::fs::remove_file(config_path);
         let _ = std::fs::remove_dir(temp_dir);

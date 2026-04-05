@@ -366,7 +366,10 @@ pub(crate) fn resolve_export_config(
     })
 }
 
-pub(crate) fn merge_database_config(mut config: DatabaseConfig, args: &ExportArgs) -> DatabaseConfig {
+pub(crate) fn merge_database_config(
+    mut config: DatabaseConfig,
+    args: &ExportArgs,
+) -> DatabaseConfig {
     if let Some(db_type) = &args.db_type {
         config.db_type = db_type.clone();
     }
@@ -392,7 +395,10 @@ pub(crate) fn merge_database_config(mut config: DatabaseConfig, args: &ExportArg
     config
 }
 
-pub(crate) fn merge_export_config(mut config: ExportConfig, args: &ExportArgs) -> Result<ExportConfig> {
+pub(crate) fn merge_export_config(
+    mut config: ExportConfig,
+    args: &ExportArgs,
+) -> Result<ExportConfig> {
     if let Some(query) = &args.query {
         config.query = query.clone();
     }
@@ -456,7 +462,9 @@ pub(crate) fn build_database_config_from_args(args: &ExportArgs) -> Result<Datab
         required_arg(&args.password, "Password")?
     };
 
-    if password.is_empty() && !non_executing_mode && (db_type == "postgresql" || db_type == "greenplum")
+    if password.is_empty()
+        && !non_executing_mode
+        && (db_type == "postgresql" || db_type == "greenplum")
     {
         return Err(anyhow!(
             "Password is required. Use --password or set PGPASSWORD environment variable"
@@ -555,13 +563,24 @@ fn merge_template_vars(
     config_vars
 }
 
-fn apply_import_templates(mut config: ImportConfig, vars: &HashMap<String, String>) -> Result<ImportConfig> {
+fn apply_import_templates(
+    mut config: ImportConfig,
+    vars: &HashMap<String, String>,
+) -> Result<ImportConfig> {
     config.input_file = render_template(&config.input_file, vars, &HashSet::new())?;
     if let Some(pre_sql) = &config.pre_sql {
-        config.pre_sql = Some(render_template(pre_sql, vars, &HashSet::from(["ext_table"]))?);
+        config.pre_sql = Some(render_template(
+            pre_sql,
+            vars,
+            &HashSet::from(["ext_table"]),
+        )?);
     }
     if let Some(post_sql) = &config.post_sql {
-        config.post_sql = Some(render_template(post_sql, vars, &HashSet::from(["ext_table"]))?);
+        config.post_sql = Some(render_template(
+            post_sql,
+            vars,
+            &HashSet::from(["ext_table"]),
+        )?);
     }
     Ok(config)
 }

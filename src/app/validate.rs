@@ -31,7 +31,8 @@ pub(crate) fn validate_resolved_import_config(resolved: &ResolvedImportConfig) -
         }
     }
 
-    if matches!(resolved.import.format, ImportFormat::Custom) && resolved.import.delimiter.is_empty()
+    if matches!(resolved.import.format, ImportFormat::Custom)
+        && resolved.import.delimiter.is_empty()
     {
         return Err(anyhow!("custom import format requires a delimiter"));
     }

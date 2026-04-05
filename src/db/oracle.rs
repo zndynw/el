@@ -527,6 +527,9 @@ mod tests {
         let bind_value = OracleBindValue::from_db_value(&DbValue::Null, Some(OracleType::Date))
             .expect("null bind should be created");
 
-        assert!(matches!(bind_value, OracleBindValue::Null(OracleType::Date)));
+        assert!(matches!(
+            bind_value,
+            OracleBindValue::Null(OracleType::Date)
+        ));
     }
 }
