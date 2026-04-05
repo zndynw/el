@@ -120,6 +120,14 @@ pub struct ExportArgs {
     /// Do not count rows before export
     #[arg(long = "no-count-rows", action = ArgAction::SetTrue, conflicts_with = "count_rows", help_heading = "Advanced")]
     pub no_count_rows: bool,
+
+    /// Print the resolved export execution plan without connecting or writing files
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "print_resolved_config", help_heading = "Advanced")]
+    pub dry_run: bool,
+
+    /// Print the resolved export configuration without connecting or writing files
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "dry_run", help_heading = "Advanced")]
+    pub print_resolved_config: bool,
 }
 
 impl ExportArgs {
@@ -281,6 +289,14 @@ pub struct ImportArgs {
     /// Greenplum gpfdist directory, only used by legacy rewrite path
     #[arg(long, help_heading = "Greenplum")]
     pub gpfdist_dir: Option<String>,
+
+    /// Print the resolved import execution plan without connecting or reading files
+    #[arg(long, action = ArgAction::SetTrue, help_heading = "Advanced")]
+    pub dry_run: bool,
+
+    /// Print the resolved import configuration without connecting or reading files
+    #[arg(long, action = ArgAction::SetTrue, help_heading = "Advanced")]
+    pub print_resolved_config: bool,
 }
 
 impl ImportArgs {

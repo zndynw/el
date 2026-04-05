@@ -527,12 +527,6 @@ mod tests {
         let bind_value = OracleBindValue::from_db_value(&DbValue::Null, Some(OracleType::Date))
             .expect("null bind should be created");
 
-        match bind_value {
-            OracleBindValue::Null(OracleType::Date) => {}
-            other => panic!(
-                "unexpected bind value: {:?}",
-                std::mem::discriminant(&other)
-            ),
-        }
+        assert!(matches!(bind_value, OracleBindValue::Null(OracleType::Date)));
     }
 }
