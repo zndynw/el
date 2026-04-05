@@ -16,7 +16,7 @@ use anyhow::{Context, Result, anyhow};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
-use tracing::info;
+use tracing::{error, info};
 
 pub fn run(cli: Cli) -> Result<()> {
     let verbose_override = cli.verbose_override();
@@ -110,7 +110,7 @@ fn run_export(
         output = %resolved.export.output_file,
         format = ?resolved.export.format,
         delimiter = ?resolved.export.delimiter,
-        show_progress = resolved.export.show_progress,
+        progress_interval_secs = resolved.export.progress_interval_secs,
         include_header = resolved.export.include_header,
         buffer_size = resolved.export.buffer_size,
         compression = ?resolved.export.compression,
@@ -119,13 +119,29 @@ fn run_export(
     tracing::debug!(phase = "export_query", sql = %resolved.export.query, "sql_preview");
 
     info!(db_type = %resolved.database.db_type, "db_connect_start");
-    let mut db = build_database(resolved.database)?;
-    db.connect()?;
+    let mut db = match build_database(resolved.database) {
+        Ok(db) => db,
+        Err(e) => {
+            error!(error = %e, "db_build_failed");
+            return Err(e);
+        }
+    };
+
+    if let Err(e) = db.connect() {
+        error!(error = %e, "db_connect_failed");
+        return Err(e);
+    }
     info!("db_connect_ok");
 
     info!("export_start");
     let mut exporter = Exporter::new(resolved.export);
-    let stats = exporter.export(db.as_mut())?;
+    let stats = match exporter.export(db.as_mut()) {
+        Ok(s) => s,
+        Err(e) => {
+            error!(error = %e, "export_failed");
+            return Err(e);
+        }
+    };
 
     stats.print_summary();
 
@@ -153,13 +169,26 @@ fn run_import(
     tracing::debug!(database = ?resolved.database, import = ?resolved.import, "import_config_resolved");
 
     info!(db_type = %resolved.database.db_type, "db_connect_start");
-    let mut db = build_database(resolved.database)?;
-    db.connect()?;
+    let mut db = match build_database(resolved.database) {
+        Ok(db) => db,
+        Err(e) => {
+            error!(error = %e, "db_build_failed");
+            return Err(e);
+        }
+    };
+
+    if let Err(e) = db.connect() {
+        error!(error = %e, "db_connect_failed");
+        return Err(e);
+    }
     info!("db_connect_ok");
 
     info!("import_start");
     let mut importer = Importer::new(db, resolved.import);
-    importer.import()?;
+    if let Err(e) = importer.import() {
+        error!(error = %e, "import_failed");
+        return Err(e);
+    }
 
     Ok(())
 }
@@ -320,8 +349,8 @@ fn merge_import_config(mut config: ImportConfig, args: &ImportArgs) -> Result<Im
     if let Some(compression) = &args.compression {
         config.compression = parse_compression_type(compression)?;
     }
-    if let Some(progress_interval) = args.progress_interval {
-        config.progress_interval = progress_interval;
+    if let Some(progress_interval_secs) = args.progress_interval_secs {
+        config.progress_interval_secs = progress_interval_secs;
     }
 
     validate_import_target(&config)?;
@@ -424,7 +453,7 @@ fn build_import_config_from_args(args: &ImportArgs) -> Result<ImportConfig> {
             .transpose()?
             .unwrap_or(TransactionMode::PerBatch),
         show_progress: args.progress_override().unwrap_or(false),
-        progress_interval: args.progress_interval.unwrap_or(1_000_000),
+        progress_interval_secs: args.progress_interval_secs.unwrap_or(30),
         truncate_table: args.truncate,
         pre_sql: args.pre_sql.clone(),
         post_sql: args.post_sql.clone(),
@@ -566,9 +595,6 @@ fn merge_export_config(mut config: ExportConfig, args: &ExportArgs) -> Result<Ex
     if let Some(delimiter) = &args.delimiter {
         config.delimiter = delimiter.clone();
     }
-    if let Some(show_progress) = args.progress_override() {
-        config.show_progress = show_progress;
-    }
     if let Some(include_header) = args.header_override() {
         config.include_header = include_header;
     }
@@ -578,8 +604,8 @@ fn merge_export_config(mut config: ExportConfig, args: &ExportArgs) -> Result<Ex
     if let Some(compression) = &args.compression {
         config.compression = parse_compression_type(compression)?;
     }
-    if let Some(progress_interval) = args.progress_interval {
-        config.progress_interval = progress_interval;
+    if let Some(progress_interval_secs) = args.progress_interval_secs {
+        config.progress_interval_secs = progress_interval_secs;
     }
     if let Some(count_rows) = args.count_rows_override() {
         config.count_rows = count_rows;
@@ -647,11 +673,10 @@ fn build_export_config_from_args(args: &ExportArgs) -> Result<ExportConfig> {
         output_file: required_arg(&args.output, "Output file")?,
         format,
         delimiter: args.delimiter.clone().unwrap_or_else(|| "\x03".to_string()),
-        show_progress: args.progress_override().unwrap_or(false),
         include_header: args.header_override().unwrap_or(false),
         buffer_size: args.buffer_size.unwrap_or(1024 * 1024),
         compression,
-        progress_interval: args.progress_interval.unwrap_or(1_000_000),
+        progress_interval_secs: args.progress_interval_secs.unwrap_or(30),
         skip_errors: false,
         count_rows: args.count_rows_override().unwrap_or(false),
     })
@@ -821,15 +846,13 @@ mod tests {
             output: None,
             format: None,
             delimiter: None,
-            progress: false,
-            no_progress: false,
             fetch: None,
             header: false,
             no_header: false,
             buffer_size: None,
             compression: None,
             log_file: None,
-            progress_interval: None,
+            progress_interval_secs: None,
             count_rows: false,
             no_count_rows: false,
         }
@@ -867,11 +890,10 @@ mod tests {
             output_file: "output.csv".to_string(),
             format: ExportFormat::Csv,
             delimiter: ",".to_string(),
-            show_progress: false,
             include_header: false,
             buffer_size: 1024,
             compression: CompressionType::None,
-            progress_interval: 10,
+            progress_interval_secs: 10,
             skip_errors: false,
             count_rows: false,
         };
@@ -882,35 +904,33 @@ mod tests {
         assert_eq!(merged.query, "SELECT 1");
         assert_eq!(merged.output_file, "output.csv");
         assert_eq!(merged.format, ExportFormat::Csv);
-        assert!(!merged.show_progress);
         assert!(!merged.include_header);
         assert_eq!(merged.compression, CompressionType::None);
-        assert_eq!(merged.progress_interval, 10);
+        assert_eq!(merged.progress_interval_secs, 10);
     }
 
     #[test]
-    fn merge_export_config_allows_disabling_progress_from_cli() {
+    fn merge_export_config_allows_overriding_progress_interval_secs_from_cli() {
         let base = ExportConfig {
             query: "SELECT 1".to_string(),
             output_file: "output.csv".to_string(),
             format: ExportFormat::Csv,
             delimiter: ",".to_string(),
-            show_progress: true,
             include_header: true,
             buffer_size: 1024,
             compression: CompressionType::None,
-            progress_interval: 10,
+            progress_interval_secs: 10,
             skip_errors: false,
             count_rows: false,
         };
         let mut args = empty_args();
-        args.no_progress = true;
+        args.progress_interval_secs = Some(45);
         args.no_header = true;
 
         let merged = merge_export_config(base, &args).expect("merge should succeed");
 
-        assert!(!merged.show_progress);
         assert!(!merged.include_header);
+        assert_eq!(merged.progress_interval_secs, 45);
     }
 
     #[test]
@@ -1001,11 +1021,10 @@ mod tests {
             output_file: "out/{table}_{batch_date}.csv".to_string(),
             format: ExportFormat::Csv,
             delimiter: ",".to_string(),
-            show_progress: false,
             include_header: false,
             buffer_size: 1024,
             compression: CompressionType::None,
-            progress_interval: 10,
+            progress_interval_secs: 10,
             skip_errors: false,
             count_rows: false,
         };
@@ -1094,7 +1113,7 @@ mod tests {
             error_log_table: None,
             compression: None,
             log_file: None,
-            progress_interval: None,
+            progress_interval_secs: None,
             gpfdist_host: None,
             gpfdist_port: None,
             gpfdist_dir: None,

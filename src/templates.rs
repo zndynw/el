@@ -26,6 +26,7 @@ batch_size = 1000
 on_error = "skip"
 transaction_mode = "per_batch"
 show_progress = true
+progress_interval_secs = 30
 "#;
 
 const POSTGRESQL_EXPORT: &str = r#"# PostgreSQL export template
@@ -49,7 +50,7 @@ query = "select * from {schema}.{table_name} where dt = '{batch_date}'"
 output_file = "out/{table_name}_{batch_date}.csv"
 format = "csv"
 include_header = true
-show_progress = true
+progress_interval_secs = 30
 "#;
 
 const MYSQL_IMPORT: &str = r#"# MySQL import template
@@ -93,6 +94,7 @@ query = "select * from {table_name} where biz_date = '{batch_date}'"
 output_file = "out/{table_name}_{batch_date}.csv"
 format = "csv"
 include_header = true
+progress_interval_secs = 30
 "#;
 
 const ORACLE_IMPORT: &str = r#"# Oracle import template
@@ -136,6 +138,7 @@ query = "select * from {table_name} where trunc(crt_date) = to_date('{batch_date
 output_file = "out/{table_name}_{batch_date}.csv"
 format = "csv"
 include_header = true
+progress_interval_secs = 30
 "#;
 
 const GREENPLUM_IMPORT: &str = r#"# Greenplum gpfdist direct import template

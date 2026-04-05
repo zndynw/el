@@ -54,7 +54,12 @@ impl MySqlDatabase {
                 })) {
                     Ok(db_value) => db_value,
                     Err(_) => {
-                        tracing::warn!(column_index = index, "column_value_convert_failed");
+                        tracing::warn!(
+                            column_index = index,
+                            column_name = %column.name_str(),
+                            column_type = ?column.column_type(),
+                            "column_value_convert_failed"
+                        );
                         DbValue::Null
                     }
                 }

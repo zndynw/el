@@ -69,14 +69,6 @@ pub struct ExportArgs {
     #[arg(long, help_heading = "Common")]
     pub delimiter: Option<String>,
 
-    /// Show progress
-    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_progress", help_heading = "Common")]
-    pub progress: bool,
-
-    /// Do not show progress
-    #[arg(long = "no-progress", action = ArgAction::SetTrue, conflicts_with = "progress", help_heading = "Common")]
-    pub no_progress: bool,
-
     /// Include header
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_header", help_heading = "Common")]
     pub header: bool,
@@ -117,9 +109,9 @@ pub struct ExportArgs {
     #[arg(long, help_heading = "Advanced")]
     pub log_file: Option<String>,
 
-    /// Progress output interval in rows
+    /// Progress output interval in seconds
     #[arg(long, help_heading = "Advanced")]
-    pub progress_interval: Option<u64>,
+    pub progress_interval_secs: Option<u64>,
 
     /// Count rows before export
     #[arg(long, action = ArgAction::SetTrue, conflicts_with = "no_count_rows", help_heading = "Advanced")]
@@ -131,16 +123,6 @@ pub struct ExportArgs {
 }
 
 impl ExportArgs {
-    pub fn progress_override(&self) -> Option<bool> {
-        if self.progress {
-            Some(true)
-        } else if self.no_progress {
-            Some(false)
-        } else {
-            None
-        }
-    }
-
     pub fn header_override(&self) -> Option<bool> {
         if self.header {
             Some(true)
@@ -280,9 +262,9 @@ pub struct ImportArgs {
     #[arg(long, help_heading = "Advanced")]
     pub log_file: Option<String>,
 
-    /// Progress interval in rows
+    /// Progress output interval in seconds
     #[arg(long, help_heading = "Advanced")]
-    pub progress_interval: Option<u64>,
+    pub progress_interval_secs: Option<u64>,
 
     /// Error log table for Greenplum
     #[arg(long, help_heading = "Greenplum")]

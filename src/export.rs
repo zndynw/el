@@ -8,7 +8,7 @@ use flate2::write::GzEncoder;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::time::Instant;
-use tracing::info;
+use tracing::{error, info, trace};
 
 pub struct Exporter {
     config: ExportConfig,
@@ -22,6 +22,13 @@ impl Exporter {
     pub fn export(&mut self, db: &mut dyn Database) -> Result<ExportStats> {
         let start_time = Instant::now();
 
+        trace!(
+            output_file = %self.config.output_file,
+            format = ?self.config.format,
+            compression = ?self.config.compression,
+            "export_config_details"
+        );
+
         // Try direct export first (PostgreSQL optimization)
         if let Ok((_bytes_written, row_count)) = self.try_direct_export(db) {
             let duration = start_time.elapsed();
@@ -31,6 +38,13 @@ impl Exporter {
             } else {
                 0.0
             };
+
+            trace!(
+                method = "direct_export",
+                rows = row_count,
+                duration_ms = duration.as_millis() as u64,
+                "export_method_completed"
+            );
 
             return Ok(ExportStats {
                 rows_exported: row_count,
@@ -44,11 +58,16 @@ impl Exporter {
             });
         }
 
+        trace!(method = "stream_export", "export_method_selected");
+
         // Fallback to traditional stream_query
         let db_start = Instant::now();
         let (rows, skipped, io_write_time) = {
             let mut sink = ExportSink::new(&self.config)?;
-            db.stream_query(&self.config.query, &mut sink)?;
+            if let Err(e) = db.stream_query(&self.config.query, &mut sink) {
+                error!(error = %e, "stream_query_failed");
+                return Err(e);
+            }
             sink.finish()?;
             (
                 sink.rows_exported,
@@ -122,6 +141,7 @@ struct ExportSink {
     rows_skipped: u64,
     io_write_time_secs: f64,
     query_started_at: Instant,
+    last_progress_time: Instant,
 }
 
 enum RecordWriter {
@@ -164,6 +184,7 @@ impl ExportSink {
             rows_skipped: 0,
             io_write_time_secs: 0.0,
             query_started_at: Instant::now(),
+            last_progress_time: Instant::now(),
         })
     }
 
@@ -175,6 +196,7 @@ impl ExportSink {
 
 impl QuerySink for ExportSink {
     fn on_columns(&mut self, columns: &[String]) -> Result<()> {
+        trace!(columns = ?columns, "export_columns_received");
         if self.config.include_header {
             self.writer.write_strings(columns)?;
         }
@@ -195,16 +217,20 @@ impl QuerySink for ExportSink {
             Ok(_) => {
                 self.rows_exported += 1;
 
-                if self.config.show_progress
-                    && self.rows_exported % self.config.progress_interval == 0
+                if self.last_progress_time.elapsed().as_secs_f64()
+                    >= self.config.progress_interval_secs as f64
                 {
-                    let elapsed = self.query_started_at.elapsed().as_secs_f64();
-                    let speed = self.rows_exported as f64 / elapsed;
+                    let total_elapsed = self.query_started_at.elapsed().as_secs_f64();
+                    let speed = self.rows_exported as f64 / total_elapsed;
                     info!(
                         rows_exported = self.rows_exported,
-                        speed_rows_per_sec = speed,
+                        rows_skipped = self.rows_skipped,
+                        speed_rows_per_sec = speed as u64,
+                        elapsed_secs = total_elapsed as u64,
+                        progress_interval_secs = self.config.progress_interval_secs,
                         "export_progress"
                     );
+                    self.last_progress_time = Instant::now();
                 }
                 Ok(())
             }
@@ -212,12 +238,18 @@ impl QuerySink for ExportSink {
                 if self.config.skip_errors {
                     self.rows_skipped += 1;
                     tracing::warn!(
+                        row_num = self.rows_exported + self.rows_skipped,
                         rows_skipped = self.rows_skipped,
                         reason = %e,
                         "export_row_skipped"
                     );
                     Ok(())
                 } else {
+                    error!(
+                        row_num = self.rows_exported + self.rows_skipped,
+                        error = %e,
+                        "export_row_write_failed"
+                    );
                     Err(e.into())
                 }
             }

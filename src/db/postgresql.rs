@@ -6,6 +6,7 @@ use postgres::{Client, NoTls};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::time::Instant;
+use tracing::info;
 
 pub struct PostgreSqlDatabase {
     config: DatabaseConfig,
@@ -193,6 +194,8 @@ impl Database for PostgreSqlDatabase {
         let mut reader = conn.copy_out(&copy_query)?;
         let mut buffer = [0u8; 8192];
         let mut total_bytes = 0u64;
+        let export_start = Instant::now();
+        let mut last_progress_time = Instant::now();
 
         loop {
             let n = reader.read(&mut buffer)?;
@@ -201,6 +204,19 @@ impl Database for PostgreSqlDatabase {
             }
             writer.write_all(&buffer[..n])?;
             total_bytes += n as u64;
+
+            if last_progress_time.elapsed().as_secs_f64() >= format.progress_interval_secs as f64 {
+                let elapsed = export_start.elapsed().as_secs_f64();
+                let bytes_per_sec = total_bytes as f64 / elapsed;
+                info!(
+                    bytes_written = total_bytes,
+                    speed_bytes_per_sec = bytes_per_sec as u64,
+                    elapsed_secs = elapsed as u64,
+                    progress_interval_secs = format.progress_interval_secs,
+                    "export_progress"
+                );
+                last_progress_time = Instant::now();
+            }
         }
 
         Ok((total_bytes, row_count))

@@ -260,7 +260,7 @@ query = "select * from {schema}.{table_name} where dt = '{batch_date}'"
 output_file = "out/{table_name}_{batch_date}.csv"
 format = "csv"
 include_header = true
-show_progress = true
+progress_interval_secs = 30
 compression = "none"
 ```
 
@@ -289,7 +289,7 @@ target_columns = ["id", "name", "email", "created_at"]
 batch_size = 1000
 on_error = "skip"
 transaction_mode = "per_batch"
-show_progress = true
+progress_interval_secs = 30
 
 [import.column_mapping]
 user_id = "id"
@@ -384,7 +384,6 @@ datestamp = "current_date"
 --format <csv|tsv|custom>     导出格式
 --delimiter <CHAR>            自定义分隔符
 --header / --no-header        是否输出表头
---progress / --no-progress    是否显示进度
 
 --db-type <TYPE>              数据库类型
 --conn <STRING>               连接串
@@ -394,7 +393,7 @@ datestamp = "current_date"
 --fetch <N>                   拉取批次大小
 --buffer-size <N>             输出缓冲大小
 --compression <TYPE>          压缩类型：none/gzip
---progress-interval <N>       进度输出间隔
+--progress-interval-secs <N>  进度输出间隔（秒）
 --count-rows / --no-count-rows
 --log-file <FILE>             日志文件
 ```
@@ -430,7 +429,7 @@ datestamp = "current_date"
 --pre-sql <SQL>               导入前执行 SQL
 --post-sql <SQL>              导入后执行 SQL
 --compression <TYPE>          压缩类型：none/gzip
---progress-interval <N>       进度输出间隔
+--progress-interval-secs <N>  进度输出间隔（秒）
 --log-file <FILE>             日志文件
 
 --error-log-table <TABLE>     Greenplum 错误日志表

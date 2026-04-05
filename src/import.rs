@@ -7,6 +7,7 @@ use flate2::read::GzDecoder;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufReader, Read};
+use std::time::Instant;
 
 pub struct Importer {
     db: Box<dyn Database>,
@@ -19,12 +20,25 @@ impl Importer {
     }
 
     pub fn import(&mut self) -> Result<()> {
-        self.db.connect()?;
+        let import_start = Instant::now();
+
+        tracing::trace!(
+            input_file = %self.config.input_file,
+            table = %self.config.qualified_target_table(),
+            batch_size = self.config.batch_size,
+            "import_config_details"
+        );
+
+        if let Err(e) = self.db.connect() {
+            tracing::error!(error = %e, "db_connect_failed");
+            return Err(e);
+        }
 
         if let Some(stats) = self.db.direct_import(&self.config)? {
             tracing::debug!(
                 table = %self.config.qualified_target_table(),
-                "direct_import_used"
+                method = "direct_import",
+                "import_method_selected"
             );
             tracing::info!(
                 status = if stats.rows_failed > 0 { "partial" } else { "success" },
@@ -37,11 +51,31 @@ impl Importer {
             return Ok(());
         }
 
+        tracing::debug!(method = "stream_import", "import_method_selected");
+
         if self.config.truncate_table {
+            let truncate_start = Instant::now();
             self.truncate_table()?;
+            tracing::trace!(
+                duration_ms = truncate_start.elapsed().as_millis() as u64,
+                "truncate_completed"
+            );
         }
 
-        let reader = self.open_input_file()?;
+        let file_open_start = Instant::now();
+        let reader = self.open_input_file().map_err(|e| {
+            tracing::error!(
+                input_file = %self.config.input_file,
+                error = %e,
+                "file_open_failed"
+            );
+            e
+        })?;
+        tracing::trace!(
+            duration_ms = file_open_start.elapsed().as_millis() as u64,
+            "file_opened"
+        );
+
         let mut csv_reader = self.create_csv_reader(reader)?;
 
         let (source_columns, target_columns, column_indices) =
@@ -61,11 +95,19 @@ impl Importer {
 
         if let Some(sql) = self.config.pre_sql.clone() {
             tracing::debug!(phase = "pre_sql", sql = %sql, "sql_preview");
+            let pre_sql_start = Instant::now();
             self.execute_sql("pre_sql", &sql)?;
+            tracing::trace!(
+                phase = "pre_sql",
+                duration_ms = pre_sql_start.elapsed().as_millis() as u64,
+                "sql_completed"
+            );
         }
 
         let column_types = self.config.column_types.clone().unwrap_or_default();
         let qualified_table = self.config.qualified_target_table();
+
+        let prepare_start = Instant::now();
         let mut session = self.db.prepare_import(
             &qualified_table,
             &source_columns,
@@ -74,11 +116,17 @@ impl Importer {
             &column_types,
             &self.config,
         )?;
+        tracing::trace!(
+            duration_ms = prepare_start.elapsed().as_millis() as u64,
+            "import_session_prepared"
+        );
 
         let mut batch = Vec::new();
         let mut row_count = 0u64;
         let mut error_count = 0u64;
         let mut batch_count = 0u64;
+        let mut last_progress_time = Instant::now();
+        let progress_interval_secs = self.config.progress_interval_secs as f64;
 
         for result in csv_reader.records() {
             match result {
@@ -87,28 +135,66 @@ impl Importer {
                         batch.push(values);
                         if batch.len() >= self.config.batch_size {
                             batch_count += 1;
+                            let batch_start = Instant::now();
                             tracing::debug!(
                                 batch_no = batch_count,
                                 batch_size = batch.len(),
                                 "batch_flush_start"
                             );
                             session.insert_batch(&batch)?;
+                            let batch_duration = batch_start.elapsed();
+                            tracing::trace!(
+                                batch_no = batch_count,
+                                duration_ms = batch_duration.as_millis() as u64,
+                                rows_per_sec =
+                                    (batch.len() as f64 / batch_duration.as_secs_f64()) as u64,
+                                "batch_inserted"
+                            );
+
                             if self.config.transaction_mode == TransactionMode::PerBatch {
+                                let commit_start = Instant::now();
                                 tracing::debug!(
                                     batch_no = batch_count,
                                     transaction_mode = ?self.config.transaction_mode,
                                     "transaction_commit"
                                 );
                                 session.commit()?;
+                                tracing::trace!(
+                                    duration_ms = commit_start.elapsed().as_millis() as u64,
+                                    "transaction_committed"
+                                );
                             }
                             row_count += batch.len() as u64;
-                            self.report_progress(row_count);
+
+                            // Time-based progress reporting
+                            if self.config.show_progress {
+                                let elapsed = last_progress_time.elapsed().as_secs_f64();
+                                if elapsed >= progress_interval_secs {
+                                    let total_elapsed = import_start.elapsed().as_secs_f64();
+                                    let speed = row_count as f64 / total_elapsed;
+                                    tracing::info!(
+                                        rows_inserted = row_count,
+                                        rows_failed = error_count,
+                                        speed_rows_per_sec = speed as u64,
+                                        elapsed_secs = total_elapsed as u64,
+                                        progress_interval_secs = self.config.progress_interval_secs,
+                                        "import_progress"
+                                    );
+                                    last_progress_time = Instant::now();
+                                }
+                            }
+
                             batch.clear();
                         }
                     }
                     Err(e) => {
                         error_count += 1;
                         if self.config.on_error == ErrorStrategy::Abort {
+                            tracing::error!(
+                                row_num = row_count + batch.len() as u64 + 1,
+                                error = %e,
+                                "row_parse_failed_abort"
+                            );
                             return Err(e);
                         } else {
                             tracing::warn!(
@@ -124,6 +210,10 @@ impl Importer {
                 Err(e) => {
                     error_count += 1;
                     if self.config.on_error == ErrorStrategy::Abort {
+                        tracing::error!(
+                            error = %e,
+                            "record_read_failed_abort"
+                        );
                         return Err(e.into());
                     } else {
                         tracing::warn!(
@@ -139,38 +229,67 @@ impl Importer {
 
         if !batch.is_empty() {
             batch_count += 1;
+            let batch_start = Instant::now();
             tracing::debug!(
                 batch_no = batch_count,
                 batch_size = batch.len(),
                 "batch_flush_start"
             );
             session.insert_batch(&batch)?;
+            tracing::trace!(
+                batch_no = batch_count,
+                duration_ms = batch_start.elapsed().as_millis() as u64,
+                "batch_inserted"
+            );
             row_count += batch.len() as u64;
         }
 
         if self.config.transaction_mode == TransactionMode::All {
+            let commit_start = Instant::now();
             tracing::debug!(
                 transaction_mode = ?self.config.transaction_mode,
                 "transaction_commit"
             );
             session.commit()?;
+            tracing::trace!(
+                duration_ms = commit_start.elapsed().as_millis() as u64,
+                "transaction_committed"
+            );
         }
 
-        let stats = session.finish()?;
+        let _stats = session.finish()?;
 
         if let Some(sql) = self.config.post_sql.clone() {
             tracing::debug!(phase = "post_sql", "db_reconnect_start");
-            self.db.connect()?;
+            if let Err(e) = self.db.connect() {
+                tracing::error!(phase = "post_sql", error = %e, "db_reconnect_failed");
+                return Err(e);
+            }
             tracing::debug!(phase = "post_sql", sql = %sql, "sql_preview");
+            let post_sql_start = Instant::now();
             self.execute_sql("post_sql", &sql)?;
+            tracing::trace!(
+                phase = "post_sql",
+                duration_ms = post_sql_start.elapsed().as_millis() as u64,
+                "sql_completed"
+            );
         }
+
+        let total_duration = import_start.elapsed();
+        let speed = if total_duration.as_secs_f64() > 0.0 {
+            row_count as f64 / total_duration.as_secs_f64()
+        } else {
+            0.0
+        };
 
         tracing::info!(
             status = if error_count > 0 { "partial" } else { "success" },
             table = %self.config.qualified_target_table(),
             rows_inserted = row_count,
             rows_failed = error_count,
-            duration_ms = stats.duration.as_millis() as u64,
+            batch_count = batch_count,
+            duration_ms = total_duration.as_millis() as u64,
+            speed_rows_per_sec = speed as u64,
             "import_summary"
         );
 
@@ -180,19 +299,34 @@ impl Importer {
     fn truncate_table(&mut self) -> Result<()> {
         let table = self.config.qualified_target_table();
         let sql = format!("TRUNCATE TABLE {}", table);
-        self.db.execute_sql(&sql)?;
+        if let Err(e) = self.db.execute_sql(&sql) {
+            tracing::error!(table = %table, error = %e, "table_truncate_failed");
+            return Err(e);
+        }
         tracing::info!(table = %table, "table_truncated");
         Ok(())
     }
 
     fn execute_sql(&mut self, phase: &str, sql: &str) -> Result<()> {
-        let affected = self.db.execute_sql(sql)?;
+        let affected = match self.db.execute_sql(sql) {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::error!(phase = phase, sql = %sql, error = %e, "sql_execution_failed");
+                return Err(e);
+            }
+        };
         tracing::info!(phase = phase, affected_rows = affected, sql = %sql, "sql_executed");
         Ok(())
     }
 
     fn open_input_file(&self) -> Result<Box<dyn Read>> {
         let file = File::open(&self.config.input_file).context("Failed to open input file")?;
+
+        tracing::trace!(
+            input_file = %self.config.input_file,
+            compression = ?self.config.compression,
+            "file_opening"
+        );
 
         let reader: Box<dyn Read> = match self.config.compression {
             CompressionType::Gzip => Box::new(GzDecoder::new(file)),
@@ -261,15 +395,22 @@ impl Importer {
                 .and_then(|types| types.get(&target_columns[i]))
                 .map(|s| s.as_str());
 
-            values.push(DbValue::from_str(s, &self.config.null_value, type_hint)?);
+            match DbValue::from_str(s, &self.config.null_value, type_hint) {
+                Ok(v) => values.push(v),
+                Err(e) => {
+                    tracing::trace!(
+                        column = %target_columns[i],
+                        column_index = idx,
+                        value = %s,
+                        type_hint = ?type_hint,
+                        error = %e,
+                        "value_parse_failed"
+                    );
+                    return Err(e);
+                }
+            }
         }
         Ok(values)
-    }
-
-    fn report_progress(&self, row_count: u64) {
-        if self.config.show_progress && row_count % self.config.progress_interval == 0 {
-            tracing::info!(rows_inserted = row_count, "import_progress");
-        }
     }
 }
 
@@ -431,7 +572,7 @@ mod tests {
             on_error: ErrorStrategy::Skip,
             transaction_mode: TransactionMode::PerBatch,
             show_progress: false,
-            progress_interval: 1_000_000,
+            progress_interval_secs: 30,
             truncate_table: false,
             pre_sql: None,
             post_sql: None,

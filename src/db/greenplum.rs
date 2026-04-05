@@ -156,15 +156,26 @@ impl Database for GreenplumDatabase {
 
         let result = (|| -> Result<ImportStats> {
             if config.truncate_table {
+                let truncate_start = Instant::now();
                 let table = config.qualified_target_table();
                 conn.execute(&format!("TRUNCATE TABLE {}", table), &[])?;
-                tracing::info!(table = %table, "table_truncated");
+                tracing::info!(
+                    table = %table,
+                    duration_ms = truncate_start.elapsed().as_millis() as u64,
+                    "table_truncated"
+                );
             }
 
             if let Some(sql) = &config.pre_sql {
                 let sql = sql.replace("{ext_table}", &temp_table);
+                let pre_sql_start = Instant::now();
                 let affected = conn.execute(&sql, &[])?;
-                tracing::info!(phase = "pre_sql", affected_rows = affected, "sql_executed");
+                tracing::info!(
+                    phase = "pre_sql",
+                    affected_rows = affected,
+                    duration_ms = pre_sql_start.elapsed().as_millis() as u64,
+                    "sql_executed"
+                );
             }
 
             let insert_sql = format!(
@@ -174,12 +185,25 @@ impl Database for GreenplumDatabase {
                 projection.select_expressions.join(", "),
                 temp_table
             );
+            tracing::debug!(sql = %insert_sql, "insert_sql_preview");
+            let insert_start = Instant::now();
             let rows_inserted = conn.execute(&insert_sql, &[])?;
+            tracing::trace!(
+                rows_inserted = rows_inserted,
+                duration_ms = insert_start.elapsed().as_millis() as u64,
+                "insert_completed"
+            );
 
             if let Some(sql) = &config.post_sql {
                 let sql = sql.replace("{ext_table}", &temp_table);
+                let post_sql_start = Instant::now();
                 let affected = conn.execute(&sql, &[])?;
-                tracing::info!(phase = "post_sql", affected_rows = affected, "sql_executed");
+                tracing::info!(
+                    phase = "post_sql",
+                    affected_rows = affected,
+                    duration_ms = post_sql_start.elapsed().as_millis() as u64,
+                    "sql_executed"
+                );
             }
 
             let rows_failed = if let Some(err_table) = &config.error_log_table {
@@ -417,7 +441,7 @@ mod tests {
             on_error: ErrorStrategy::Skip,
             transaction_mode: TransactionMode::PerBatch,
             show_progress: false,
-            progress_interval: 1_000_000,
+            progress_interval_secs: 30,
             truncate_table: false,
             pre_sql: None,
             post_sql: None,

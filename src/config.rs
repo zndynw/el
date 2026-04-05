@@ -80,15 +80,13 @@ pub struct ExportConfig {
     #[serde(default = "default_delimiter")]
     pub delimiter: String,
     #[serde(default)]
-    pub show_progress: bool,
-    #[serde(default)]
     pub include_header: bool,
     #[serde(default = "default_buffer_size")]
     pub buffer_size: usize,
     #[serde(default)]
     pub compression: CompressionType,
-    #[serde(default = "default_progress_interval")]
-    pub progress_interval: u64,
+    #[serde(default = "default_progress_interval_secs")]
+    pub progress_interval_secs: u64,
     #[serde(default)]
     pub skip_errors: bool,
     #[serde(default)]
@@ -153,8 +151,8 @@ fn default_fetch_size() -> usize {
     1000
 }
 
-fn default_progress_interval() -> u64 {
-    1_000_000
+fn default_progress_interval_secs() -> u64 {
+    30
 }
 
 impl Default for DatabaseConfig {
@@ -216,8 +214,8 @@ pub struct ImportConfig {
     pub transaction_mode: TransactionMode,
     #[serde(default)]
     pub show_progress: bool,
-    #[serde(default = "default_progress_interval")]
-    pub progress_interval: u64,
+    #[serde(default = "default_progress_interval_secs")]
+    pub progress_interval_secs: u64,
     #[serde(default)]
     pub truncate_table: bool,
     #[serde(default)]

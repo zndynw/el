@@ -35,6 +35,7 @@ impl OracleDatabase {
                 self.read_value(row, index, oracle_type).or_else(|e| {
                     tracing::warn!(
                         column_index = index,
+                        oracle_type = ?oracle_type,
                         reason = %e,
                         "column_value_read_failed"
                     );
