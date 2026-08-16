@@ -1,7 +1,7 @@
 use crate::config::DatabaseConfig;
 use crate::db::pgpass::{PgPassPlatform, PgPassTarget, load_password, select_path};
 use anyhow::{Context, Result, anyhow};
-use postgres::{Config, config::Host};
+use postgres::{Client, Config, NoTls, config::Host};
 use std::env;
 use std::ffi::OsString;
 use tracing::warn;
@@ -21,68 +21,175 @@ impl DatabaseKind {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct CredentialSources {
+    #[cfg(test)]
     pub(crate) pgpassword: Option<Vec<u8>>,
     pub(crate) pgpassfile: Option<OsString>,
     pub(crate) home: Option<OsString>,
     pub(crate) appdata: Option<OsString>,
 }
 
-impl CredentialSources {
-    fn from_process() -> Self {
-        Self {
-            pgpassword: env::var("PGPASSWORD").ok().map(String::into_bytes),
-            pgpassfile: env::var_os("PGPASSFILE"),
-            home: env::var_os("HOME"),
-            appdata: env::var_os("APPDATA"),
+pub(crate) fn connect_from_process(
+    database: &DatabaseConfig,
+    kind: DatabaseKind,
+) -> Result<Client> {
+    let configs = build_configs_from_process(database, kind)?;
+    let mut last_error = None;
+
+    for config in configs {
+        match config.connect(NoTls) {
+            Ok(client) => return Ok(client),
+            Err(error) => last_error = Some(error),
         }
+    }
+
+    match last_error {
+        Some(error) => Err(error.into()),
+        None => Err(anyhow!(
+            "No {} connection targets configured",
+            kind.display_name()
+        )),
     }
 }
 
-pub(crate) fn build_config_from_process(
-    database: &DatabaseConfig,
-    kind: DatabaseKind,
-) -> Result<Config> {
-    build_config(database, kind, &CredentialSources::from_process())
-}
-
+#[cfg(test)]
 fn build_config(
     database: &DatabaseConfig,
     kind: DatabaseKind,
     sources: &CredentialSources,
 ) -> Result<Config> {
-    let mut config = parse_connection_config(database, kind)?;
-    if config.get_user().is_none() {
-        config.user(&database.username);
-    }
-
-    let explicit_password = (!database.password.is_empty()).then_some(database.password.as_bytes());
-    let url_password = config.get_password().map(<[u8]>::to_vec);
-    let password = resolve_password(
-        explicit_password,
-        url_password.as_deref(),
-        sources.pgpassword.as_deref(),
-        || lookup_pgpass_password(&config, sources),
-    );
-
-    if let Some(password) = password {
-        config.password(password);
-    }
-
-    Ok(config)
+    take_single_config(build_configs(database, kind, sources)?)
 }
 
-fn parse_connection_config(database: &DatabaseConfig, kind: DatabaseKind) -> Result<Config> {
+#[cfg(test)]
+fn build_configs(
+    database: &DatabaseConfig,
+    kind: DatabaseKind,
+    sources: &CredentialSources,
+) -> Result<Vec<Config>> {
+    let configs = parse_connection_configs(database, kind)?;
+    apply_passwords(
+        configs,
+        database,
+        || sources.pgpassword.clone(),
+        || sources.clone(),
+    )
+}
+
+fn build_configs_from_process(
+    database: &DatabaseConfig,
+    kind: DatabaseKind,
+) -> Result<Vec<Config>> {
+    let configs = parse_connection_configs(database, kind)?;
+    apply_passwords(
+        configs,
+        database,
+        || env::var("PGPASSWORD").ok().map(String::into_bytes),
+        || CredentialSources {
+            #[cfg(test)]
+            pgpassword: None,
+            pgpassfile: env::var_os("PGPASSFILE"),
+            home: env::var_os("HOME"),
+            appdata: env::var_os("APPDATA"),
+        },
+    )
+}
+
+fn apply_passwords<P, F>(
+    mut configs: Vec<Config>,
+    database: &DatabaseConfig,
+    load_pgpassword: P,
+    load_pgpass_sources: F,
+) -> Result<Vec<Config>>
+where
+    P: FnOnce() -> Option<Vec<u8>>,
+    F: FnOnce() -> CredentialSources,
+{
+    for config in &mut configs {
+        if config.get_user().is_none() {
+            config.user(&database.username);
+        }
+    }
+
+    if !database.password.is_empty() {
+        for config in &mut configs {
+            config.password(database.password.as_bytes());
+        }
+        return Ok(configs);
+    }
+
+    let unresolved = configs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, config)| config.get_password().is_none().then_some(index))
+        .collect::<Vec<_>>();
+    if unresolved.is_empty() {
+        return Ok(configs);
+    }
+
+    if let Some(password) = load_pgpassword() {
+        for index in unresolved {
+            configs[index].password(&password);
+        }
+        return Ok(configs);
+    }
+
+    let sources = load_pgpass_sources();
+    for index in unresolved {
+        let config = &mut configs[index];
+        let password = lookup_pgpass_password(config, &sources);
+        if config.get_hosts().len().max(config.get_hostaddrs().len()) > 1 {
+            if password.is_some() {
+                return Err(anyhow!(
+                    "pgpass fallback cannot safely apply one password to multiple PostgreSQL hosts"
+                ));
+            }
+            continue;
+        }
+        if let Some(password) = password {
+            config.password(password);
+        }
+    }
+
+    Ok(configs)
+}
+
+#[cfg(test)]
+fn take_single_config(mut configs: Vec<Config>) -> Result<Config> {
+    if configs.len() != 1 {
+        return Err(anyhow!(
+            "Expected one PostgreSQL connection target, found {}",
+            configs.len()
+        ));
+    }
+    Ok(configs.remove(0))
+}
+
+fn parse_connection_configs(database: &DatabaseConfig, kind: DatabaseKind) -> Result<Vec<Config>> {
     if database.connection_string.starts_with("postgresql://")
         || database.connection_string.starts_with("postgres://")
     {
-        return database
-            .connection_string
-            .parse::<Config>()
-            .with_context(|| format!("Invalid {} connection string", kind.display_name()));
+        return split_connection_targets(&database.connection_string)?
+            .into_iter()
+            .map(|connection_string| parse_url_config(&connection_string, kind))
+            .collect();
     }
 
+    Ok(vec![parse_compact_config(database, kind)?])
+}
+
+fn parse_url_config(connection_string: &str, kind: DatabaseKind) -> Result<Config> {
+    let mut config = connection_string
+        .parse::<Config>()
+        .with_context(|| format!("Invalid {} connection string", kind.display_name()))?;
+    if config.get_hosts().is_empty() && config.get_hostaddrs().is_empty() {
+        config.host("localhost");
+    }
+    Ok(config)
+}
+
+fn parse_compact_config(database: &DatabaseConfig, kind: DatabaseKind) -> Result<Config> {
     let target = parse_compact_target(&database.connection_string, kind)?;
     let mut config = Config::new();
     config
@@ -91,6 +198,135 @@ fn parse_connection_config(database: &DatabaseConfig, kind: DatabaseKind) -> Res
         .dbname(&target.database)
         .user(&database.username);
     Ok(config)
+}
+
+fn split_connection_targets(connection_string: &str) -> Result<Vec<String>> {
+    let Some(scheme_end) = connection_string.find("://") else {
+        return Ok(vec![connection_string.to_string()]);
+    };
+    let authority_start = scheme_end + 3;
+    let authority_end = connection_string[authority_start..]
+        .find(['/', '?', '#'])
+        .map(|offset| authority_start + offset)
+        .unwrap_or(connection_string.len());
+    let authority = &connection_string[authority_start..authority_end];
+    let hosts_start = authority
+        .rfind('@')
+        .map(|offset| authority_start + offset + 1)
+        .unwrap_or(authority_start);
+    let hosts = &connection_string[hosts_start..authority_end];
+    let host_parts = split_host_list(hosts);
+    let fragment_start = connection_string
+        .find('#')
+        .unwrap_or(connection_string.len());
+    let query_start = connection_string[..fragment_start].find('?');
+    let path_end = query_start.unwrap_or(fragment_start);
+    let query_parts = query_start
+        .map(|start| {
+            connection_string[start + 1..fragment_start]
+                .split('&')
+                .collect()
+        })
+        .unwrap_or_else(Vec::new);
+
+    let query_host_count = query_list_len(&query_parts, "host");
+    let query_hostaddr_count = query_list_len(&query_parts, "hostaddr");
+    let target_count = host_parts
+        .len()
+        .max(query_host_count)
+        .max(query_hostaddr_count);
+
+    if target_count <= 1 {
+        return Ok(vec![connection_string.to_string()]);
+    }
+
+    for (name, count) in [
+        ("authority host", host_parts.len()),
+        ("host", query_host_count),
+        ("hostaddr", query_hostaddr_count),
+        ("port", query_list_len(&query_parts, "port")),
+    ] {
+        if count > 1 && count != target_count {
+            return Err(anyhow!(
+                "PostgreSQL {name} list has {count} entries but expected {target_count}"
+            ));
+        }
+    }
+
+    let mut targets = Vec::with_capacity(target_count);
+    for index in 0..target_count {
+        let authority_host = if host_parts.len() == target_count {
+            host_parts[index]
+        } else {
+            hosts
+        };
+        let mut target = format!(
+            "{}{}{}",
+            &connection_string[..hosts_start],
+            authority_host,
+            &connection_string[authority_end..path_end]
+        );
+        if query_start.is_some() {
+            target.push('?');
+            target.push_str(
+                &query_parts
+                    .iter()
+                    .map(|part| select_query_list_entry(part, index, target_count))
+                    .collect::<Vec<_>>()
+                    .join("&"),
+            );
+        }
+        target.push_str(&connection_string[fragment_start..]);
+        targets.push(target);
+    }
+
+    Ok(targets)
+}
+
+fn query_list_len(query_parts: &[&str], name: &str) -> usize {
+    query_parts
+        .iter()
+        .find_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            (key == name).then(|| value.split(',').count())
+        })
+        .unwrap_or(0)
+}
+
+fn select_query_list_entry(part: &str, index: usize, target_count: usize) -> String {
+    let Some((key, value)) = part.split_once('=') else {
+        return part.to_string();
+    };
+    if !matches!(key, "host" | "hostaddr" | "port") {
+        return part.to_string();
+    }
+
+    let values = value.split(',').collect::<Vec<_>>();
+    if values.len() == target_count {
+        format!("{key}={}", values[index])
+    } else {
+        part.to_string()
+    }
+}
+
+fn split_host_list(hosts: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut bracket_depth: usize = 0;
+
+    for (index, ch) in hosts.char_indices() {
+        match ch {
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            ',' if bracket_depth == 0 => {
+                result.push(&hosts[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    result.push(&hosts[start..]);
+    result
 }
 
 struct ConnectionTarget {
@@ -135,6 +371,7 @@ fn parse_compact_target(value: &str, kind: DatabaseKind) -> Result<ConnectionTar
     })
 }
 
+#[cfg(test)]
 fn resolve_password<F>(
     explicit: Option<&[u8]>,
     url: Option<&[u8]>,
@@ -194,10 +431,16 @@ fn pgpass_target(config: &Config) -> Option<OwnedPgPassTarget> {
         .map(str::as_bytes)
         .unwrap_or(&user)
         .to_vec();
-    let host = match config.get_hosts().first()? {
-        Host::Tcp(host) => host.as_bytes().to_vec(),
+    let host = match config.get_hosts().first() {
+        Some(Host::Tcp(host)) => host.as_bytes().to_vec(),
         #[cfg(unix)]
-        Host::Unix(_) => b"localhost".to_vec(),
+        Some(Host::Unix(_)) => b"localhost".to_vec(),
+        None => config
+            .get_hostaddrs()
+            .first()
+            .map(ToString::to_string)
+            .map(String::into_bytes)
+            .unwrap_or_else(|| b"localhost".to_vec()),
     };
     let port = config.get_ports().first().copied().unwrap_or(5432);
 
@@ -223,7 +466,10 @@ fn current_platform() -> PgPassPlatform {
 
 #[cfg(test)]
 mod tests {
-    use super::{CredentialSources, DatabaseKind, build_config, resolve_password};
+    use super::{
+        CredentialSources, DatabaseKind, apply_passwords, build_config, build_configs,
+        parse_connection_configs, resolve_password,
+    };
     use crate::config::DatabaseConfig;
     use postgres::config::Host;
     use std::cell::Cell;
@@ -284,10 +530,10 @@ mod tests {
     fn process_sources_keep_explicit_password_at_highest_priority() {
         let database = database_config("db:5432/app", "explicit");
 
-        let config = super::build_config_from_process(&database, DatabaseKind::PostgreSql)
+        let configs = super::build_configs_from_process(&database, DatabaseKind::PostgreSql)
             .expect("explicit password should avoid lower-priority file lookup");
 
-        assert_eq!(config.get_password(), Some(b"explicit".as_slice()));
+        assert_eq!(configs[0].get_password(), Some(b"explicit".as_slice()));
     }
 
     #[test]
@@ -419,6 +665,144 @@ mod tests {
     }
 
     #[test]
+    fn hostless_url_uses_localhost_for_pgpass_matching() {
+        let path = temp_path("hostless-url");
+        write_pgpass(&path, b"localhost:5432:app:alice:file-secret\n");
+        let database = database_config("postgresql:///app", "");
+        let sources = CredentialSources {
+            pgpassfile: Some(path.clone().into_os_string()),
+            ..Default::default()
+        };
+
+        let config = build_config(&database, DatabaseKind::PostgreSql, &sources).unwrap();
+        fs::remove_file(path).expect("test pgpass should be removed");
+
+        assert_eq!(config.get_hosts(), &[Host::Tcp("localhost".to_string())]);
+        assert_eq!(config.get_password(), Some(b"file-secret".as_slice()));
+    }
+
+    #[test]
+    fn hostaddr_only_url_uses_hostaddr_for_pgpass_matching() {
+        let path = temp_path("hostaddr-only-url");
+        write_pgpass(&path, b"127.0.0.1:5432:app:alice:file-secret\n");
+        let database = database_config("postgresql:///app?hostaddr=127.0.0.1", "");
+        let sources = CredentialSources {
+            pgpassfile: Some(path.clone().into_os_string()),
+            ..Default::default()
+        };
+
+        let config = build_config(&database, DatabaseKind::PostgreSql, &sources).unwrap();
+        fs::remove_file(path).expect("test pgpass should be removed");
+
+        assert_eq!(config.get_password(), Some(b"file-secret".as_slice()));
+    }
+
+    #[test]
+    fn multi_host_url_uses_host_specific_pgpass_passwords() {
+        let path = temp_path("multi-host");
+        write_pgpass(
+            &path,
+            b"host-one:5432:app:alice:first-secret\nhost-two:6432:app:alice:second-secret\n",
+        );
+        let database = database_config(
+            "postgresql://alice@host-one:5432,host-two:6432/app?application_name=el",
+            "",
+        );
+        let sources = CredentialSources {
+            pgpassfile: Some(path.clone().into_os_string()),
+            ..Default::default()
+        };
+
+        let configs = build_configs(&database, DatabaseKind::PostgreSql, &sources).unwrap();
+        fs::remove_file(path).expect("test pgpass should be removed");
+
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].get_hosts(), &[Host::Tcp("host-one".to_string())]);
+        assert_eq!(configs[0].get_ports(), &[5432]);
+        assert_eq!(configs[0].get_password(), Some(b"first-secret".as_slice()));
+        assert_eq!(configs[1].get_hosts(), &[Host::Tcp("host-two".to_string())]);
+        assert_eq!(configs[1].get_ports(), &[6432]);
+        assert_eq!(configs[1].get_password(), Some(b"second-secret".as_slice()));
+        assert_eq!(configs[0].get_application_name(), Some("el"));
+        assert_eq!(configs[1].get_application_name(), Some("el"));
+    }
+
+    #[test]
+    fn authority_hosts_pair_with_query_hostaddrs() {
+        let path = temp_path("authority-hostaddr-pairs");
+        write_pgpass(
+            &path,
+            b"host-one:5432:app:alice:first-secret\nhost-two:5432:app:alice:second-secret\n",
+        );
+        let database = database_config(
+            "postgresql://alice@host-one,host-two/app?hostaddr=10.0.0.1,10.0.0.2",
+            "",
+        );
+        let sources = CredentialSources {
+            pgpassfile: Some(path.clone().into_os_string()),
+            ..Default::default()
+        };
+
+        let configs = build_configs(&database, DatabaseKind::PostgreSql, &sources).unwrap();
+        fs::remove_file(path).expect("test pgpass should be removed");
+
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].get_hosts(), &[Host::Tcp("host-one".to_string())]);
+        assert_eq!(configs[0].get_hostaddrs()[0].to_string(), "10.0.0.1");
+        assert_eq!(configs[0].get_password(), Some(b"first-secret".as_slice()));
+        assert_eq!(configs[1].get_hosts(), &[Host::Tcp("host-two".to_string())]);
+        assert_eq!(configs[1].get_hostaddrs()[0].to_string(), "10.0.0.2");
+        assert_eq!(configs[1].get_password(), Some(b"second-secret".as_slice()));
+    }
+
+    #[test]
+    fn query_host_list_uses_host_specific_pgpass_passwords() {
+        let path = temp_path("query-host-list");
+        write_pgpass(
+            &path,
+            b"host-one:5432:app:alice:first-secret\nhost-two:6432:app:alice:second-secret\n",
+        );
+        let database = database_config(
+            "postgresql:///app?user=alice&host=host-one,host-two&port=5432,6432",
+            "",
+        );
+        let sources = CredentialSources {
+            pgpassfile: Some(path.clone().into_os_string()),
+            ..Default::default()
+        };
+
+        let configs = build_configs(&database, DatabaseKind::PostgreSql, &sources).unwrap();
+        fs::remove_file(path).expect("test pgpass should be removed");
+
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].get_hosts(), &[Host::Tcp("host-one".to_string())]);
+        assert_eq!(configs[0].get_ports(), &[5432]);
+        assert_eq!(configs[0].get_password(), Some(b"first-secret".as_slice()));
+        assert_eq!(configs[1].get_hosts(), &[Host::Tcp("host-two".to_string())]);
+        assert_eq!(configs[1].get_ports(), &[6432]);
+        assert_eq!(configs[1].get_password(), Some(b"second-secret".as_slice()));
+    }
+
+    #[test]
+    fn query_host_list_without_credentials_is_left_for_the_driver() {
+        let database = database_config(
+            "postgresql:///app?user=alice&host=host-one,host-two&port=5432,6432",
+            "",
+        );
+
+        let configs = build_configs(
+            &database,
+            DatabaseKind::PostgreSql,
+            &CredentialSources::default(),
+        )
+        .unwrap();
+
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].get_password(), None);
+        assert_eq!(configs[1].get_password(), None);
+    }
+
+    #[test]
     fn greenplum_validation_uses_greenplum_name() {
         let error = build_config(
             &database_config("missing-database", ""),
@@ -446,6 +830,79 @@ mod tests {
 
         assert_eq!(password, Some(b"explicit".to_vec()));
         assert!(!called.get());
+    }
+
+    #[test]
+    fn explicit_password_skips_all_process_source_loaders() {
+        let database = database_config("db:5432/app", "explicit");
+        let configs = parse_connection_configs(&database, DatabaseKind::PostgreSql).unwrap();
+        let pgpassword_read = Cell::new(false);
+        let pgpass_paths_read = Cell::new(false);
+
+        let configs = apply_passwords(
+            configs,
+            &database,
+            || {
+                pgpassword_read.set(true);
+                None
+            },
+            || {
+                pgpass_paths_read.set(true);
+                CredentialSources::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(configs[0].get_password(), Some(b"explicit".as_slice()));
+        assert!(!pgpassword_read.get());
+        assert!(!pgpass_paths_read.get());
+    }
+
+    #[test]
+    fn url_password_skips_all_process_source_loaders() {
+        let database = database_config("postgresql://alice:url@db:5432/app", "");
+        let configs = parse_connection_configs(&database, DatabaseKind::PostgreSql).unwrap();
+        let pgpassword_read = Cell::new(false);
+        let pgpass_paths_read = Cell::new(false);
+
+        let configs = apply_passwords(
+            configs,
+            &database,
+            || {
+                pgpassword_read.set(true);
+                None
+            },
+            || {
+                pgpass_paths_read.set(true);
+                CredentialSources::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(configs[0].get_password(), Some(b"url".as_slice()));
+        assert!(!pgpassword_read.get());
+        assert!(!pgpass_paths_read.get());
+    }
+
+    #[test]
+    fn pgpassword_skips_pgpass_path_loader() {
+        let database = database_config("db:5432/app", "");
+        let configs = parse_connection_configs(&database, DatabaseKind::PostgreSql).unwrap();
+        let pgpass_paths_read = Cell::new(false);
+
+        let configs = apply_passwords(
+            configs,
+            &database,
+            || Some(b"environment".to_vec()),
+            || {
+                pgpass_paths_read.set(true);
+                CredentialSources::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(configs[0].get_password(), Some(b"environment".as_slice()));
+        assert!(!pgpass_paths_read.get());
     }
 
     #[test]

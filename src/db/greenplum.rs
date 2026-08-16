@@ -1,10 +1,10 @@
 use crate::config::{DatabaseConfig, ImportConfig, ImportFormat};
-use crate::db::postgres_config::{DatabaseKind, build_config_from_process};
+use crate::db::postgres_config::{DatabaseKind, connect_from_process};
 use crate::db::{Database, ImportSession, ImportStats, QuerySink};
 use crate::value::{DbValue, ValueFormatter};
 use anyhow::{Context, Result, anyhow};
 use csv::WriterBuilder;
-use postgres::{Client, NoTls};
+use postgres::Client;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, Write};
@@ -27,9 +27,7 @@ impl GreenplumDatabase {
 
 impl Database for GreenplumDatabase {
     fn connect(&mut self) -> Result<()> {
-        let config = build_config_from_process(&self.config, DatabaseKind::Greenplum)?;
-        let client = config
-            .connect(NoTls)
+        let client = connect_from_process(&self.config, DatabaseKind::Greenplum)
             .context("Failed to connect to Greenplum database")?;
         self.connection = Some(client);
         Ok(())

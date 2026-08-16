@@ -1,9 +1,9 @@
 use crate::config::{DatabaseConfig, ExportConfig, ExportFormat};
-use crate::db::postgres_config::{DatabaseKind, build_config_from_process};
+use crate::db::postgres_config::{DatabaseKind, connect_from_process};
 use crate::db::{Database, ImportSession, ImportStats, QuerySink};
 use crate::value::DbValue;
 use anyhow::{Context, Result, anyhow};
-use postgres::{Client, NoTls};
+use postgres::Client;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::time::Instant;
@@ -25,9 +25,7 @@ impl PostgreSqlDatabase {
 
 impl Database for PostgreSqlDatabase {
     fn connect(&mut self) -> Result<()> {
-        let config = build_config_from_process(&self.config, DatabaseKind::PostgreSql)?;
-        let client = config
-            .connect(NoTls)
+        let client = connect_from_process(&self.config, DatabaseKind::PostgreSql)
             .context("Failed to connect to PostgreSQL database")?;
         self.connection = Some(client);
         Ok(())

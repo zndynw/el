@@ -586,6 +586,21 @@ mod tests {
     }
 
     #[test]
+    fn export_output_redacts_password_embedded_in_connection_url() {
+        let mut resolved = sample_resolved_export_config();
+        resolved.database.connection_string =
+            "postgresql://app:url-secret@localhost:5432/app".to_string();
+
+        let config_output = super::build_export_resolved_config_text(&resolved);
+        let dry_run_output = super::build_export_dry_run_plan(&resolved);
+
+        assert!(!config_output.contains("url-secret"));
+        assert!(!dry_run_output.contains("url-secret"));
+        assert!(config_output.contains("<redacted PostgreSQL connection URL>"));
+        assert!(dry_run_output.contains("<redacted PostgreSQL connection URL>"));
+    }
+
+    #[test]
     fn import_resolved_config_includes_sections_and_redacts_password() {
         let output = super::build_import_resolved_config_text(
             &sample_resolved_import_config_with_greenplum(),

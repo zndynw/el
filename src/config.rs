@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
@@ -58,10 +59,11 @@ pub struct DatabaseConfig {
 impl fmt::Debug for DatabaseConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let password = if self.password.is_empty() { "" } else { "***" };
+        let connection_string = self.redacted_connection_string();
 
         f.debug_struct("DatabaseConfig")
             .field("db_type", &self.db_type)
-            .field("connection_string", &self.connection_string)
+            .field("connection_string", &connection_string)
             .field("username", &self.username)
             .field("password", &password)
             .field("fetch_size", &self.fetch_size)
@@ -353,7 +355,7 @@ username = "postgres"
     }
 
     #[test]
-    fn database_config_debug_redacts_password_only() {
+    fn database_config_debug_redacts_password_and_url_credentials() {
         let config = DatabaseConfig {
             db_type: "postgresql".to_string(),
             connection_string: "postgresql://user:secret@localhost:5432/testdb".to_string(),
@@ -369,6 +371,41 @@ username = "postgres"
 
         assert!(debug.contains(r#"password: "***""#));
         assert!(!debug.contains(r#"password: "secret""#));
-        assert!(debug.contains("postgresql://user:secret@localhost:5432/testdb"));
+        assert!(!debug.contains("secret"));
+        assert!(debug.contains("<redacted PostgreSQL connection URL>"));
+    }
+
+    #[test]
+    fn connection_string_redaction_covers_password_query_parameter() {
+        let config = DatabaseConfig {
+            db_type: "postgresql".to_string(),
+            connection_string: "postgresql://user@localhost/testdb?password=query-secret"
+                .to_string(),
+            username: "tester".to_string(),
+            password: String::new(),
+            fetch_size: 1000,
+            gpfdist_host: None,
+            gpfdist_port: None,
+            gpfdist_dir: None,
+        };
+
+        let redacted = config.redacted_connection_string();
+
+        assert_eq!(redacted, "<redacted PostgreSQL connection URL>");
+        assert!(!redacted.contains("query-secret"));
+    }
+}
+
+impl DatabaseConfig {
+    pub(crate) fn redacted_connection_string(&self) -> Cow<'_, str> {
+        let value = self.connection_string.as_str();
+        if !value.starts_with("postgresql://") && !value.starts_with("postgres://") {
+            return Cow::Borrowed(value);
+        }
+
+        match value.parse::<postgres::Config>() {
+            Ok(config) if config.get_password().is_none() => Cow::Borrowed(value),
+            Ok(_) | Err(_) => Cow::Borrowed("<redacted PostgreSQL connection URL>"),
+        }
     }
 }
