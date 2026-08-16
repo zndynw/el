@@ -140,8 +140,26 @@ username = "app"
 
 说明：
 
-- `password` 对 PostgreSQL/Greenplum 可省略，此时会尝试读取环境变量 `PGPASSWORD`
-- Greenplum 还需要：
+- PostgreSQL/Greenplum 的 `password` 可省略，import 和 export 使用相同的凭据解析规则
+- 凭据优先级为：显式 `--password` 或配置文件 `password` > PostgreSQL URL 内嵌密码 > `PGPASSWORD` > password file
+- `--dry-run` 和 `--print-resolved-config` 不读取环境密码或 password file
+- 密码不会写入日志；resolved config 只显示空值或 `***`
+
+password file 使用 libpq 的 pgpass 格式，默认路径为：
+
+- Linux/macOS：`~/.pgpass`
+- Windows：`%APPDATA%\postgresql\pgpass.conf`
+- 设置 `PGPASSFILE` 可覆盖默认路径
+
+每条记录包含五个字段：
+
+```text
+hostname:port:database:username:password
+```
+
+前四个字段可使用 `*` 通配符，冒号和反斜杠分别写成 `\:` 和 `\\`。按文件顺序使用第一条匹配记录。Unix 下文件不能授予 group/other 任何权限，通常应设置为 `0600`；权限过宽时该文件会被忽略。
+
+Greenplum 还需要：
 
 ```toml
 gpfdist_host = "etl"
