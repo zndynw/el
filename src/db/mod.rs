@@ -1,6 +1,7 @@
 pub mod greenplum;
 pub mod mysql;
 pub mod oracle;
+mod pgpass;
 pub mod postgresql;
 
 use crate::value::DbValue;
