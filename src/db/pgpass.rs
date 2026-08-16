@@ -14,7 +14,9 @@ pub(crate) struct PgPassTarget<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PgPassPlatform {
+    #[cfg(any(not(windows), test))]
     Unix,
+    #[cfg(any(windows, test))]
     Windows,
 }
 
@@ -62,12 +64,19 @@ pub(crate) fn select_path(
     home: Option<&OsStr>,
     appdata: Option<&OsStr>,
 ) -> Option<PathBuf> {
+    #[cfg(all(windows, not(test)))]
+    let _ = home;
+    #[cfg(all(not(windows), not(test)))]
+    let _ = appdata;
+
     if let Some(path) = pgpassfile {
         return Some(PathBuf::from(path));
     }
 
     match platform {
+        #[cfg(any(not(windows), test))]
         PgPassPlatform::Unix => home.map(|path| PathBuf::from(path).join(".pgpass")),
+        #[cfg(any(windows, test))]
         PgPassPlatform::Windows => {
             appdata.map(|path| PathBuf::from(path).join("postgresql").join("pgpass.conf"))
         }

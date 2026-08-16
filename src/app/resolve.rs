@@ -81,12 +81,6 @@ pub(crate) fn merge_database_config_import(
     }
     if let Some(password) = &args.password {
         config.password = password.clone();
-    } else if (config.db_type == "postgresql" || config.db_type == "greenplum")
-        && config.password.is_empty()
-    {
-        if let Ok(pgpassword) = std::env::var("PGPASSWORD") {
-            config.password = pgpassword;
-        }
     }
     if let Some(host) = &args.gpfdist_host {
         config.gpfdist_host = Some(host.clone());
@@ -211,15 +205,12 @@ pub(crate) fn merge_logging_config_import(
 
 pub(crate) fn build_database_config_from_args_import(args: &ImportArgs) -> Result<DatabaseConfig> {
     let db_type = args.db_type.clone().context("--db-type is required")?;
-    let password = if let Some(pwd) = &args.password {
-        pwd.clone()
-    } else if args.dry_run || args.print_resolved_config {
-        String::new()
-    } else if db_type == "postgresql" || db_type == "greenplum" {
-        std::env::var("PGPASSWORD").unwrap_or_default()
-    } else {
-        return Err(anyhow!("--password is required"));
-    };
+    let password = resolve_database_password(
+        &db_type,
+        args.password.as_deref(),
+        args.dry_run || args.print_resolved_config,
+        "--password is required",
+    )?;
 
     Ok(DatabaseConfig {
         db_type,
@@ -381,12 +372,6 @@ pub(crate) fn merge_database_config(
     }
     if let Some(password) = &args.password {
         config.password = password.clone();
-    } else if (config.db_type == "postgresql" || config.db_type == "greenplum")
-        && config.password.is_empty()
-    {
-        if let Ok(pgpassword) = std::env::var("PGPASSWORD") {
-            config.password = pgpassword;
-        }
     }
     if let Some(fetch) = args.fetch {
         config.fetch_size = fetch;
@@ -452,24 +437,12 @@ pub(crate) fn merge_logging_config(
 pub(crate) fn build_database_config_from_args(args: &ExportArgs) -> Result<DatabaseConfig> {
     let db_type = args.db_type.clone().unwrap_or_else(|| "oracle".to_string());
     let non_executing_mode = args.dry_run || args.print_resolved_config;
-    let password = if let Some(pwd) = &args.password {
-        pwd.clone()
-    } else if non_executing_mode {
-        String::new()
-    } else if db_type == "postgresql" || db_type == "greenplum" {
-        std::env::var("PGPASSWORD").unwrap_or_else(|_| String::new())
-    } else {
-        required_arg(&args.password, "Password")?
-    };
-
-    if password.is_empty()
-        && !non_executing_mode
-        && (db_type == "postgresql" || db_type == "greenplum")
-    {
-        return Err(anyhow!(
-            "Password is required. Use --password or set PGPASSWORD environment variable"
-        ));
-    }
+    let password = resolve_database_password(
+        &db_type,
+        args.password.as_deref(),
+        non_executing_mode,
+        "Password is required",
+    )?;
 
     Ok(DatabaseConfig {
         db_type,
@@ -481,6 +454,23 @@ pub(crate) fn build_database_config_from_args(args: &ExportArgs) -> Result<Datab
         gpfdist_port: None,
         gpfdist_dir: None,
     })
+}
+
+pub(crate) fn resolve_database_password(
+    db_type: &str,
+    password: Option<&str>,
+    allow_missing: bool,
+    missing_message: &str,
+) -> Result<String> {
+    if let Some(password) = password {
+        return Ok(password.to_string());
+    }
+
+    if allow_missing || db_type == "postgresql" || db_type == "greenplum" {
+        return Ok(String::new());
+    }
+
+    Err(anyhow!(missing_message.to_string()))
 }
 
 fn build_export_config_from_args(args: &ExportArgs) -> Result<ExportConfig> {

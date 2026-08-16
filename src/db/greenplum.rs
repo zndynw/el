@@ -1,4 +1,5 @@
 use crate::config::{DatabaseConfig, ImportConfig, ImportFormat};
+use crate::db::postgres_config::{DatabaseKind, build_config_from_process};
 use crate::db::{Database, ImportSession, ImportStats, QuerySink};
 use crate::value::{DbValue, ValueFormatter};
 use anyhow::{Context, Result, anyhow};
@@ -22,71 +23,14 @@ impl GreenplumDatabase {
             connection: None,
         }
     }
-
-    fn build_connection_string(&self) -> Result<String> {
-        if self.config.connection_string.starts_with("postgresql://")
-            || self.config.connection_string.starts_with("postgres://")
-        {
-            Ok(self.config.connection_string.clone())
-        } else {
-            let target = parse_connection_target(&self.config.connection_string)?;
-            let mut conn_str = format!(
-                "host={} port={} dbname={} user={}",
-                target.host, target.port, target.database, self.config.username
-            );
-            if !self.config.password.is_empty() {
-                conn_str.push_str(&format!(" password={}", self.config.password));
-            }
-            Ok(conn_str)
-        }
-    }
-}
-
-struct GreenplumConnectionTarget {
-    host: String,
-    port: u16,
-    database: String,
-}
-
-fn parse_connection_target(value: &str) -> Result<GreenplumConnectionTarget> {
-    let (host_port, database) = value.rsplit_once('/').ok_or_else(|| {
-        anyhow!("Greenplum connection string must be host:port/database or host/database")
-    })?;
-
-    let database = database.trim();
-    if database.is_empty() {
-        return Err(anyhow!("Greenplum connection string must include database"));
-    }
-
-    let (host, port) = if let Some((h, p)) = host_port.rsplit_once(':') {
-        let host = h.trim();
-        if host.is_empty() {
-            return Err(anyhow!("Greenplum connection string must include host"));
-        }
-        (
-            host.to_string(),
-            p.trim().parse::<u16>().context("Invalid Greenplum port")?,
-        )
-    } else {
-        let host = host_port.trim();
-        if host.is_empty() {
-            return Err(anyhow!("Greenplum connection string must include host"));
-        }
-        (host.to_string(), 5432)
-    };
-
-    Ok(GreenplumConnectionTarget {
-        host,
-        port,
-        database: database.to_string(),
-    })
 }
 
 impl Database for GreenplumDatabase {
     fn connect(&mut self) -> Result<()> {
-        let conn_str = self.build_connection_string()?;
-        let client =
-            Client::connect(&conn_str, NoTls).context("Failed to connect to Greenplum database")?;
+        let config = build_config_from_process(&self.config, DatabaseKind::Greenplum)?;
+        let client = config
+            .connect(NoTls)
+            .context("Failed to connect to Greenplum database")?;
         self.connection = Some(client);
         Ok(())
     }

@@ -1,4 +1,5 @@
 use crate::config::{DatabaseConfig, ExportConfig, ExportFormat};
+use crate::db::postgres_config::{DatabaseKind, build_config_from_process};
 use crate::db::{Database, ImportSession, ImportStats, QuerySink};
 use crate::value::DbValue;
 use anyhow::{Context, Result, anyhow};
@@ -20,72 +21,13 @@ impl PostgreSqlDatabase {
             connection: None,
         }
     }
-
-    fn build_connection_string(&self) -> Result<String> {
-        if self.config.connection_string.starts_with("postgresql://")
-            || self.config.connection_string.starts_with("postgres://")
-        {
-            Ok(self.config.connection_string.clone())
-        } else {
-            let target = parse_connection_target(&self.config.connection_string)?;
-            let mut conn_str = format!(
-                "host={} port={} dbname={} user={}",
-                target.host, target.port, target.database, self.config.username
-            );
-            if !self.config.password.is_empty() {
-                conn_str.push_str(&format!(" password={}", self.config.password));
-            }
-            Ok(conn_str)
-        }
-    }
-}
-
-struct PostgreSqlConnectionTarget {
-    host: String,
-    port: u16,
-    database: String,
-}
-
-fn parse_connection_target(value: &str) -> Result<PostgreSqlConnectionTarget> {
-    let (host_port, database) = value.rsplit_once('/').ok_or_else(|| {
-        anyhow!("PostgreSQL connection string must be host:port/database or host/database")
-    })?;
-
-    let database = database.trim();
-    if database.is_empty() {
-        return Err(anyhow!(
-            "PostgreSQL connection string must include database"
-        ));
-    }
-
-    let (host, port) = if let Some((h, p)) = host_port.rsplit_once(':') {
-        let host = h.trim();
-        if host.is_empty() {
-            return Err(anyhow!("PostgreSQL connection string must include host"));
-        }
-        (
-            host.to_string(),
-            p.trim().parse::<u16>().context("Invalid PostgreSQL port")?,
-        )
-    } else {
-        let host = host_port.trim();
-        if host.is_empty() {
-            return Err(anyhow!("PostgreSQL connection string must include host"));
-        }
-        (host.to_string(), 5432)
-    };
-
-    Ok(PostgreSqlConnectionTarget {
-        host,
-        port,
-        database: database.to_string(),
-    })
 }
 
 impl Database for PostgreSqlDatabase {
     fn connect(&mut self) -> Result<()> {
-        let conn_str = self.build_connection_string()?;
-        let client = Client::connect(&conn_str, NoTls)
+        let config = build_config_from_process(&self.config, DatabaseKind::PostgreSql)?;
+        let client = config
+            .connect(NoTls)
             .context("Failed to connect to PostgreSQL database")?;
         self.connection = Some(client);
         Ok(())
