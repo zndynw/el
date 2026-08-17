@@ -329,9 +329,11 @@ mod tests {
                 None,
                 Some(OsStr::new(r"C:\Users\alice\AppData\Roaming")),
             ),
-            Some(PathBuf::from(
-                r"C:\Users\alice\AppData\Roaming\postgresql\pgpass.conf"
-            ))
+            Some(
+                PathBuf::from(r"C:\Users\alice\AppData\Roaming")
+                    .join("postgresql")
+                    .join("pgpass.conf"),
+            )
         );
     }
 
