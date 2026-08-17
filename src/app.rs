@@ -15,8 +15,8 @@ pub(crate) use resolve::{
     ResolvedExportConfig, ResolvedImportConfig, apply_export_templates,
     build_database_config_from_args, build_database_config_from_args_import,
     build_import_config_from_args, merge_database_config, merge_export_config,
-    merge_logging_config, render_template, resolve_export_config, resolve_export_query,
-    resolve_import_config,
+    merge_logging_config, render_template, resolve_database_password, resolve_export_config,
+    resolve_export_query, resolve_import_config,
 };
 #[cfg(test)]
 pub(crate) use run::{
@@ -48,7 +48,8 @@ mod tests {
         apply_export_templates, build_database_config_from_args,
         build_database_config_from_args_import, build_import_config_from_args,
         merge_database_config, merge_export_config, parse_cli_vars, render_template,
-        resolve_export_config, resolve_export_query, resolve_import_config,
+        resolve_database_password, resolve_export_config, resolve_export_query,
+        resolve_import_config,
     };
     use crate::cli::{Cli, ExportArgs, ImportArgs};
     use crate::config::{
@@ -387,6 +388,45 @@ mod tests {
     }
 
     #[test]
+    fn executing_postgres_protocol_connections_defer_missing_password() {
+        assert_eq!(
+            resolve_database_password("postgresql", None, false, "Password is required").unwrap(),
+            ""
+        );
+        assert_eq!(
+            resolve_database_password("greenplum", None, false, "Password is required").unwrap(),
+            ""
+        );
+    }
+
+    #[test]
+    fn executing_other_databases_still_require_password() {
+        let oracle = resolve_database_password("oracle", None, false, "Password is required")
+            .expect_err("Oracle should still require a password");
+        let mysql = resolve_database_password("mysql", None, false, "Password is required")
+            .expect_err("MySQL should still require a password");
+
+        assert_eq!(oracle.to_string(), "Password is required");
+        assert_eq!(mysql.to_string(), "Password is required");
+    }
+
+    #[test]
+    fn explicit_password_is_preserved_for_every_database() {
+        let password = "explicit".to_string();
+
+        assert_eq!(
+            resolve_database_password(
+                "postgresql",
+                Some(password.as_str()),
+                false,
+                "Password is required",
+            )
+            .unwrap(),
+            "explicit"
+        );
+    }
+
+    #[test]
     fn export_print_resolved_config_allows_postgresql_without_password() {
         let mut args = empty_args();
         args.db_type = Some("postgresql".to_string());
@@ -543,6 +583,21 @@ mod tests {
         assert!(output.contains("format = \"csv\""));
         assert!(output.contains("compression = \"gzip\""));
         assert!(!output.contains("password = \"secret\""));
+    }
+
+    #[test]
+    fn export_output_redacts_password_embedded_in_connection_url() {
+        let mut resolved = sample_resolved_export_config();
+        resolved.database.connection_string =
+            "postgresql://app:url-secret@localhost:5432/app".to_string();
+
+        let config_output = super::build_export_resolved_config_text(&resolved);
+        let dry_run_output = super::build_export_dry_run_plan(&resolved);
+
+        assert!(!config_output.contains("url-secret"));
+        assert!(!dry_run_output.contains("url-secret"));
+        assert!(config_output.contains("<redacted PostgreSQL connection URL>"));
+        assert!(dry_run_output.contains("<redacted PostgreSQL connection URL>"));
     }
 
     #[test]
