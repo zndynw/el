@@ -308,7 +308,16 @@ fn is_binary_column(column: &Column) -> bool {
         ColumnType::MYSQL_TYPE_BIT
             | ColumnType::MYSQL_TYPE_GEOMETRY
             | ColumnType::MYSQL_TYPE_VECTOR
-    ) || column.character_set() == 63
+    ) || matches!(
+        column_type,
+        ColumnType::MYSQL_TYPE_STRING
+            | ColumnType::MYSQL_TYPE_VAR_STRING
+            | ColumnType::MYSQL_TYPE_VARCHAR
+            | ColumnType::MYSQL_TYPE_BLOB
+            | ColumnType::MYSQL_TYPE_TINY_BLOB
+            | ColumnType::MYSQL_TYPE_MEDIUM_BLOB
+            | ColumnType::MYSQL_TYPE_LONG_BLOB
+    ) && column.character_set() == 63
 }
 
 #[cfg(test)]
@@ -361,6 +370,21 @@ mod tests {
         assert_eq!(
             mysql_value_to_db_value("导出内容".into(), &column),
             DbValue::Text("导出内容".to_string())
+        );
+    }
+
+    #[test]
+    fn treats_text_protocol_numeric_columns_with_binary_charset_as_text() {
+        let column = Column::new(ColumnType::MYSQL_TYPE_LONG).with_character_set(63);
+
+        assert!(!is_binary_column(&column));
+        assert_eq!(
+            mysql_value_to_db_value(mysql::Value::Bytes(b"-1".to_vec()), &column),
+            DbValue::Text("-1".to_string())
+        );
+        assert_eq!(
+            mysql_value_to_db_value(mysql::Value::Bytes(b"140".to_vec()), &column),
+            DbValue::Text("140".to_string())
         );
     }
 }
